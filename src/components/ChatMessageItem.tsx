@@ -67,7 +67,7 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
           {/* Assistant Info / Vendor Tag */}
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span className={`text-xs font-bold tracking-tight ${isDark ? 'text-slate-200' : 'text-slate-900'}`}>
-              NetConfig AI
+              NetBot
             </span>
             {message.vendorTag && (
               <span

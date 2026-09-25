@@ -1,5 +1,5 @@
 {
-  "name": "NetConfig AI - Cisco & Huawei Assistant",
+  "name": "NetBot - Cisco & Huawei Assistant",
   "description": "Interactive Cisco IOS and Huawei VRP network configuration analyzer, CLI assistant, and topology visualizer.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

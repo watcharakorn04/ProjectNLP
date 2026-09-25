@@ -13,17 +13,19 @@ import { UploadedConfigFile } from './types/network';
 import { SAMPLE_CONFIGS } from './utils/sampleConfigs';
 import { parseNetworkConfig } from './utils/networkParser';
 import { detectVendor } from './utils/vendorDetector';
-import { queryNetConfigAI } from './utils/geminiClient';
+import { queryNetBot } from './utils/geminiClient';
 import { generateMermaidTopology } from './utils/diagramGenerator';
 
-const STORAGE_KEY_SETTINGS = 'netconfig_ai_settings_v1';
-const STORAGE_KEY_MESSAGES = 'netconfig_ai_messages_v2';
+const STORAGE_KEY_SETTINGS = 'netbot_settings_v1';
+const LEGACY_STORAGE_KEY_SETTINGS = 'netconfig_ai_settings_v1';
+const STORAGE_KEY_MESSAGES = 'netbot_messages_v2';
+const LEGACY_STORAGE_KEY_MESSAGES = 'netconfig_ai_messages_v2';
 
 export default function App() {
   // 1. Settings State
   const [settings, setSettings] = useState<AppSettings>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_SETTINGS);
+      const saved = localStorage.getItem(STORAGE_KEY_SETTINGS) ?? localStorage.getItem(LEGACY_STORAGE_KEY_SETTINGS);
       if (saved) return JSON.parse(saved);
     } catch {
       // ignore
@@ -56,7 +58,7 @@ export default function App() {
   // 3. Chat Messages State (Initialized with PRD mock chat history)
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEY_MESSAGES);
+      const saved = localStorage.getItem(STORAGE_KEY_MESSAGES) ?? localStorage.getItem(LEGACY_STORAGE_KEY_MESSAGES);
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) return parsed;
@@ -204,7 +206,7 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
     setIsGenerating(true);
 
     try {
-      const response = await queryNetConfigAI({
+      const response = await queryNetBot({
         prompt: text,
         apiKey: settings.apiKey,
         language: settings.currentLanguage,

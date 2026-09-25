@@ -1,6 +1,6 @@
 export const i18n = {
   TH: {
-    appTitle: 'NetConfig AI',
+    appTitle: 'NetBot',
     appSubtitle: 'ผู้ช่วยวิเคราะห์ Cisco & Huawei CLI',
     uploadTitle: 'อัปโหลดไฟล์ Configuration',
     uploadPlaceholder: 'ลากไฟล์ .txt มาวางที่นี่ หรือคลิกเพื่อเลือกไฟล์',
@@ -50,7 +50,7 @@ export const i18n = {
     copyMermaid: 'คัดลอกโค้ด Mermaid',
     vendorCisco: 'Cisco IOS',
     vendorHuawei: 'Huawei VRP',
-    welcomeTitle: 'ยินดีต้อนรับสู่ NetConfig AI',
+    welcomeTitle: 'ยินดีต้อนรับสู่ NetBot',
     welcomeDesc: 'เครื่องมือเรียนรู้และวิเคราะห์การตั้งค่าเครือข่ายสำหรับนักศึกษาและวิศวกรเครือข่าย ศึกษาคำสั่ง เปรียบเทียบ Cisco IOS vs Huawei VRP และสร้าง Topology Diagram ได้อย่างปลอดภัยโดยไม่ต้องใช้เครื่องจริง',
     quickStartersTitle: 'คำถามหรือคำสั่งที่พบบ่อย:',
     starter1: 'สรุปการตั้งค่า VLAN และ IP Gateway ทั้งหมด',
@@ -74,7 +74,7 @@ export const i18n = {
     exportChat: 'ส่งออกบทสนทนา'
   },
   EN: {
-    appTitle: 'NetConfig AI',
+    appTitle: 'NetBot',
     appSubtitle: 'Interactive Cisco & Huawei CLI Assistant',
     uploadTitle: 'Upload Configuration File',
     uploadPlaceholder: 'Drag & drop .txt config file here, or click to browse',
@@ -124,7 +124,7 @@ export const i18n = {
     copyMermaid: 'Copy Mermaid',
     vendorCisco: 'Cisco IOS',
     vendorHuawei: 'Huawei VRP',
-    welcomeTitle: 'Welcome to NetConfig AI',
+    welcomeTitle: 'Welcome to NetBot',
     welcomeDesc: 'A safe, interactive assistant for network engineering students and junior engineers to learn, analyze, compare Cisco IOS vs. Huawei VRP, and visualize topologies without live hardware.',
     quickStartersTitle: 'Quick Starter Actions:',
     starter1: 'Summarize all active VLANs and IP Gateways',

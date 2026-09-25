@@ -42,7 +42,7 @@ export async function validateApiKey(apiKey: string): Promise<{ valid: boolean; 
   }
 }
 
-export async function queryNetConfigAI(params: {
+export async function queryNetBot(params: {
   prompt: string;
   apiKey?: string;
   language: 'EN' | 'TH';
@@ -56,7 +56,7 @@ export async function queryNetConfigAI(params: {
   // If user has a valid API key, try calling Gemini 2.5-flash
   if (apiKey && apiKey.trim().length > 15) {
     try {
-      const systemInstruction = `You are NetConfig AI, a senior network engineering instructor and multi-vendor network specialist (Cisco IOS & Huawei VRP).
+      const systemInstruction = `You are NetBot, a senior network engineering instructor and multi-vendor network specialist (Cisco IOS & Huawei VRP).
 Your task is to help network engineering students and junior engineers understand, analyze, compare, and visualize configurations.
 Target language: ${isTH ? 'Thai (ภาษาไทย) with clear technical networking terms' : 'English'}.
 When asked to summarize or analyze:
@@ -233,12 +233,12 @@ You can ask:
   // Fallback when nothing is loaded
   return {
     text: isTH
-      ? `ยินดีต้อนรับสู่ **NetConfig AI**! 🚀
+      ? `ยินดีต้อนรับสู่ **NetBot**! 🚀
 คุณสามารถเริ่มต้นได้โดย:
 - อัปโหลดไฟล์ \`.txt\` ของ Cisco IOS หรือ Huawei VRP ทางซ้ายมือ
 - หรือกดปุ่มเลือกไฟล์ตัวอย่าง (เช่น **Huawei S5700 Core Switch** หรือ **Cisco Catalyst 3850**)
 - ใส่คำถามเกี่ยวกับคำสั่ง CLI เพื่อศึกษาขั้นตอนการตั้งค่า`
-      : `Welcome to **NetConfig AI**! 🚀
+      : `Welcome to **NetBot**! 🚀
 Get started by:
 - Uploading a Cisco IOS or Huawei VRP \`.txt\` config file on the left sidebar
 - Or clicking one of the sample configs (e.g. **Huawei S5700 Core Switch** or **Cisco Catalyst 3850**)

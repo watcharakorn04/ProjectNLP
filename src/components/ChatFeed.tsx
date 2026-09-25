@@ -95,7 +95,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `netconfig_ai_chat_${Date.now()}.md`;
+    a.download = `netbot_chat_${Date.now()}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
