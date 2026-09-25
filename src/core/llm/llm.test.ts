@@ -6,7 +6,9 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MAX_OUTPUT_TOKENS,
+  MAX_PROMPT_ACL_RULES,
   buildChatRequest,
+  buildConfigContext,
   buildSystemInstruction,
   closeOpenFence,
   createSseParser,
@@ -16,8 +18,11 @@ import {
   parseOpenAiStreamChunk,
   redactSecrets,
   REDACTED,
+  SUMMARY_SECTIONS,
+  buildSummaryExamples,
   splitFencedBlocks,
-  toChatHistory
+  toChatHistory,
+  wantsNetworkSummary
 } from './index';
 import { configSourceFromSample, loadConfigSource } from '../configLoader';
 import { SAMPLE_CONFIGS } from '../../utils/sampleConfigs';
@@ -150,6 +155,34 @@ describe('buildChatRequest', () => {
     assert.equal(body.max_completion_tokens, MAX_OUTPUT_TOKENS);
   });
 
+  test('parsed JSON carries ACLs, NAT and routing processes, with long ACLs capped', () => {
+    const router = loadConfigSource({
+      fileName: 'edge.txt',
+      sizeBytes: 1,
+      rawContent: [
+        'hostname EDGE',
+        'interface GigabitEthernet0/1',
+        ' ip address 198.51.100.2 255.255.255.252',
+        ' ip nat outside',
+        'router ospf 1',
+        ' network 10.0.0.0 0.0.0.255 area 0',
+        ...Array.from({ length: MAX_PROMPT_ACL_RULES + 5 }, (_, i) => `access-list 101 permit tcp any host 10.0.0.${i} eq 443`)
+      ].join('\n')
+    });
+    assert.ok(router.ok);
+
+    const text = buildConfigContext(router.file);
+    const core = JSON.parse(text.slice(text.indexOf('<parsed_config_json>') + 20, text.indexOf('</parsed_config_json>'))).coreParser;
+    assert.equal(core.accessLists[0].rules.length, MAX_PROMPT_ACL_RULES);
+    assert.equal(core.accessLists[0].omittedRules, 5);
+    assert.deepEqual(core.nat.outsideInterfaces, ['GigabitEthernet0/1']);
+    assert.equal(core.routingProcesses[0].protocol, 'ospf');
+    // The uploaded file itself is left untouched.
+    assert.equal(router.file.extractedConfig!.accessLists[0].rules.length, MAX_PROMPT_ACL_RULES + 5);
+    // Omitted rules remain visible to the model in <raw_cli>.
+    assert.ok(text.includes(`host 10.0.0.${MAX_PROMPT_ACL_RULES + 4} eq 443`));
+  });
+
   test('history is trimmed to alternating turns that start with the user and skip errors', () => {
     const history = [
       msg('assistant', 'Welcome'),
@@ -189,6 +222,72 @@ describe('buildChatRequest', () => {
     const en = buildChatRequest({ language: 'EN', file: null, history: [], userText: 'What day is it?', now }).messages[0].content;
     assert.match(en, /Friday, September 25, 2026, 14:30/);
     assert.doesNotMatch(en, /Buddhist Era/);
+  });
+});
+
+describe('network summary format', () => {
+  const headingsOf = (markdown: string): string[] =>
+    markdown.split('\n').filter((line) => line.startsWith('### ')).map((line) => line.slice(4));
+
+  test('every example answer has the four sections in order, the table header and valid Mermaid', () => {
+    for (const language of ['EN', 'TH'] as const) {
+      const answers = buildSummaryExamples(language).split('<example_answer>').slice(1);
+      assert.equal(answers.length, 2, language);
+
+      for (const block of answers) {
+        const answer = block.slice(0, block.indexOf('</example_answer>'));
+        assert.deepEqual(headingsOf(answer), [...SUMMARY_SECTIONS[language]]);
+        assert.ok(answer.includes('| Interface | Mode / VLAN | IP Address / Prefix | Admin Status | Description |'));
+
+        const diagrams = splitFencedBlocks(answer).filter((s) => s.type === 'code' && s.lang === 'mermaid');
+        assert.equal(diagrams.length, 1);
+        const segment = diagrams[0];
+        assert.ok(segment.type === 'code' && segment.closed);
+        const diagram = segment.code;
+        assert.match(diagram, /^graph (TD|LR)\n/);
+        assert.doesNotMatch(diagram, /%%|click|[()]/);
+        for (const line of diagram.split('\n').slice(1)) {
+          assert.match(line.trim(), /^[A-Za-z0-9_]+(\["[^"]+"\]| -->\|"[^"]+"\| [A-Za-z0-9_]+)$/, line);
+        }
+      }
+    }
+  });
+
+  test('examples cover both vendors and are marked as made up', () => {
+    const examples = buildSummaryExamples('EN');
+    assert.match(examples, /<example vendor="Cisco IOS">[\s\S]*hostname ACC-SW-01/);
+    assert.match(examples, /<example vendor="Huawei VRP">[\s\S]*sysname AGG-SW-01/);
+    assert.match(examples, /Never copy their hostnames/);
+  });
+
+  test('few-shot examples are attached only when a summary is likely', () => {
+    assert.equal(wantsNetworkSummary({ action: 'summary' }), true);
+    assert.equal(wantsNetworkSummary({ action: 'security', userText: 'summary' }), false);
+    assert.equal(wantsNetworkSummary({ userText: 'Please summarise this switch' }), true);
+    assert.equal(wantsNetworkSummary({ userText: 'ขอภาพรวมของ config นี้' }), true);
+    assert.equal(wantsNetworkSummary({ userText: 'Which VLAN is Gi0/2 in?' }), false);
+
+    const summary = buildChatRequest({ language: 'EN', file: null, history: [], action: 'summary' });
+    assert.match(summary.messages[0].content, /<example vendor="Cisco IOS">/);
+    assert.match(summary.messages[1].content, /Follow the Network summary format exactly/);
+    assert.equal(summary.temperature, 0.2);
+
+    const question = buildChatRequest({ language: 'EN', file: null, history: [], userText: 'Which VLAN is Gi0/2 in?' });
+    assert.doesNotMatch(question.messages[0].content, /<example /);
+    // The format contract itself is always present so free-text summaries follow it too.
+    assert.match(question.messages[0].content, /### Executive Overview/);
+  });
+
+  test('Thai prompts use Thai headings and the Thai style rules; English prompts do not', () => {
+    const th = buildSystemInstruction('TH', new Date(2026, 0, 1), true);
+    for (const heading of SUMMARY_SECTIONS.TH) assert.ok(th.includes(`### ${heading}`), heading);
+    assert.match(th, /Thai writing style/);
+    assert.match(th, /formal written register/);
+    assert.ok(th.includes('ทำหน้าที่เป็น access switch'));
+
+    const en = buildSystemInstruction('EN', new Date(2026, 0, 1), true);
+    assert.doesNotMatch(en, /Thai writing style/);
+    assert.doesNotMatch(en, /[\u0E00-\u0E7F]/);
   });
 });
 

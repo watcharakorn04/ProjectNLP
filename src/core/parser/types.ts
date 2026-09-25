@@ -54,6 +54,121 @@ export interface StaticRoute {
   vrf?: string;
 }
 
+/**
+ * Cisco "standard" / Huawei "basic" ACLs match the source only; Cisco "extended" / Huawei "advanced"
+ * ACLs also match protocol, destination and ports.
+ */
+export type AclType = 'standard' | 'extended';
+
+export interface AclRule {
+  /** Cisco sequence number or Huawei rule ID, when the config states one. */
+  sequence?: number;
+  action: 'permit' | 'deny';
+  /** `ip` for standard/basic ACLs. */
+  protocol: string;
+  /** `any`, a CIDR prefix (`10.0.0.0/24`, `10.0.0.5/32`), `address wildcard` when the wildcard is non-contiguous, or `object-group NAME`. */
+  source: string;
+  sourcePort?: string;
+  /** Same format as `source`; always `any` for standard/basic ACLs. */
+  destination: string;
+  /** Port match such as `eq 22` or `range 1000 2000`. */
+  destinationPort?: string;
+}
+
+export interface AccessList {
+  /** Number or name, e.g. "10", "NAT_USERS", "3000". */
+  name: string;
+  type: AclType;
+  rules: AclRule[];
+}
+
+export interface StaticNatRule {
+  type: 'static';
+  /** Cisco `ip nat inside|outside source`; Huawei NAT is always reported as `inside`. */
+  direction: 'inside' | 'outside';
+  /** Set for port mappings (`tcp` / `udp`). */
+  protocol?: string;
+  localAddress: string;
+  localPort?: string;
+  /** Omitted when the global side is an interface address. */
+  globalAddress?: string;
+  globalPort?: string;
+  /** Interface whose address is the global side, or (Huawei) the interface the rule is configured on. */
+  interface?: string;
+}
+
+export interface DynamicNatRule {
+  type: 'dynamic';
+  direction: 'inside' | 'outside';
+  /** ACL that selects the traffic to translate. */
+  acl: string;
+  /** Address pool (Cisco `ip nat pool`, Huawei `nat address-group`). Omitted when translating to an interface address. */
+  pool?: string;
+  /** Interface whose address is used (Cisco `interface X`, Huawei Easy IP), or where the Huawei rule is configured. */
+  interface?: string;
+  /** Port address translation (Cisco `overload`; Huawei unless `no-pat`). */
+  overload: boolean;
+}
+
+export type NatRule = StaticNatRule | DynamicNatRule;
+
+export interface NatPool {
+  name: string;
+  startAddress: string;
+  endAddress: string;
+  subnetMask?: string;
+}
+
+export interface NatConfig {
+  /** Cisco `ip nat inside` interfaces. Huawei has no equivalent marking. */
+  insideInterfaces: string[];
+  /** Cisco `ip nat outside` interfaces, and Huawei interfaces carrying NAT rules. */
+  outsideInterfaces: string[];
+  pools: NatPool[];
+  rules: NatRule[];
+}
+
+export interface OspfNetwork {
+  address: string;
+  wildcard: string;
+  /** Area ID as a number (Huawei's dotted `0.0.0.0` is converted). */
+  area: number;
+}
+
+export interface OspfProcess {
+  protocol: 'ospf';
+  processId: number;
+  routerId?: string;
+  vrf?: string;
+  networks: OspfNetwork[];
+  /** Interfaces enabled directly (Cisco `ip ospf <pid> area <a>`, Huawei `ospf enable <pid> area <a>`). */
+  interfaces: { name: string; area: number }[];
+  /** Redistributed sources, normalised across vendors: `connected`, `static`, `ospf 2`, `bgp 65001`… */
+  redistribute: string[];
+  /** Cisco `default-information originate` / Huawei `default-route-advertise`. */
+  defaultOriginate: boolean;
+}
+
+export interface BgpNeighbor {
+  address: string;
+  /** Own `remote-as` / `as-number`, or the one inherited from its peer group. */
+  remoteAs?: string;
+  description?: string;
+}
+
+export interface BgpProcess {
+  protocol: 'bgp';
+  /** Kept as a string so asdot notation ("65000.10") survives. */
+  asNumber: string;
+  routerId?: string;
+  neighbors: BgpNeighbor[];
+  /** Advertised IPv4 unicast networks; the classful mask is used when none is given. */
+  networks: { address: string; mask: string }[];
+  redistribute: string[];
+}
+
+export type RoutingProcess = OspfProcess | BgpProcess;
+
 export interface ParseMeta {
   detectedBy: 'hint' | 'auto';
   /** Detection confidence 0–100 (100 when a hint was supplied). */
@@ -69,6 +184,9 @@ export interface ExtractedNetworkConfig {
   interfaces: InterfaceEntry[];
   sviGateways: SviGateway[];
   staticRoutes: StaticRoute[];
+  accessLists: AccessList[];
+  nat: NatConfig;
+  routingProcesses: RoutingProcess[];
   meta: ParseMeta;
 }
 

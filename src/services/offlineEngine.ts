@@ -1,7 +1,9 @@
 import { ParsedNetworkConfig } from '../types/network';
 import type { SupportedLanguage } from '../types/chat';
 import type { QuickActionType } from '../core/llm';
+import type { ExtractedNetworkConfig } from '../core/parser';
 import { generateSummaryMarkdown } from '../utils/networkParser';
+import { auditFeatures, describeFeatures, featureOverview } from './offlineFeatures';
 import { generateMermaidTopology } from '../utils/diagramGenerator';
 
 /**
@@ -33,8 +35,10 @@ export function generateOfflineResponse(params: {
   intent?: QuickActionType;
   language: SupportedLanguage;
   parsedConfig?: ParsedNetworkConfig;
+  /** Core parser output; supplies structured routing, NAT and ACL data the legacy shape lacks. */
+  extractedConfig?: ExtractedNetworkConfig;
 }): OfflineResponse {
-  const { prompt, language, parsedConfig } = params;
+  const { prompt, language, parsedConfig, extractedConfig } = params;
   const isTH = language === 'TH';
   const intent = params.intent ?? detectIntent(prompt);
 
@@ -76,7 +80,7 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
   if (intent === 'summary') {
     if (parsedConfig) {
       return {
-        text: generateSummaryMarkdown(parsedConfig, language),
+        text: generateSummaryMarkdown(parsedConfig, language, extractedConfig && describeFeatures(extractedConfig, isTH)),
         source: 'offline_engine'
       };
     } else {
@@ -91,7 +95,7 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
 
   // 3. Security Audit request
   if (intent === 'security') {
-    return generateSecurityAuditResponse(parsedConfig, isTH);
+    return generateSecurityAuditResponse(parsedConfig, extractedConfig, isTH);
   }
 
   // 4. Cisco vs Huawei CLI Comparison / Translation
@@ -106,7 +110,8 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
 - **ระบบปฏิบัติการ:** ${parsedConfig.vendor}
 - **VLAN ที่พบ:** ${parsedConfig.vlans.map(v => v.id).join(', ') || 'ไม่มี'}
 - **อินเทอร์เฟซทั้งหมด:** ${parsedConfig.interfaces.length} พอร์ต (${parsedConfig.interfaces.filter(i => i.mode === 'trunk').length} Trunk)
-
+${extractedConfig ? `${featureOverview(extractedConfig, true)}
+` : ''}
 คุณสามารถถามเกี่ยวกับ:
 1. *"สรุป Config"* เพื่อดูรายละเอียด VLAN, IP Address และ Routing ทั้งหมด
 2. *"สร้างแผนภาพ Topology"* เพื่อดู Diagram โครงสร้างเครือข่าย
@@ -116,7 +121,8 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
 - **Vendor Platform:** ${parsedConfig.vendor}
 - **Active VLANs:** ${parsedConfig.vlans.map(v => v.id).join(', ') || 'Default'}
 - **Interfaces:** ${parsedConfig.interfaces.length} configured ports (${parsedConfig.interfaces.filter(i => i.mode === 'trunk').length} Trunks)
-
+${extractedConfig ? `${featureOverview(extractedConfig, false)}
+` : ''}
 You can ask:
 1. *"Summarize Config"* for a full breakdown of VLANs, IPs, and Routing.
 2. *"Generate Topology"* to visualize network connections.
@@ -193,7 +199,12 @@ Huawei VRP uses \`display\` instead of \`show\`, \`undo\` instead of \`no\`, and
   };
 }
 
-function generateSecurityAuditResponse(parsedConfig: ParsedNetworkConfig | undefined, isTH: boolean): OfflineResponse {
+function generateSecurityAuditResponse(
+  parsedConfig: ParsedNetworkConfig | undefined,
+  extractedConfig: ExtractedNetworkConfig | undefined,
+  isTH: boolean
+): OfflineResponse {
+  const featureChecks = extractedConfig ? `\n\n${auditFeatures(extractedConfig, isTH)}` : '';
   if (!parsedConfig) {
     return {
       text: isTH ? 'กรุณาอัปโหลดไฟล์ Config ก่อนเพื่อทำการตรวจความปลอดภัย' : 'Please upload a config file first to run a security audit.',
@@ -222,7 +233,7 @@ function generateSecurityAuditResponse(parsedConfig: ParsedNetworkConfig | undef
      ? '- เปิดใช้งาน `stp bpdu-protection` เพื่อป้องกัน Rogue Switch บนพอร์ต Access'
      : '- เปิดใช้งาน `spanning-tree portfast` และ `spanning-tree bpduguard enable` บน Access Ports'}
 3. **Default VLAN 1 Management:**
-   - หลีกเลี่ยงการใช้ VLAN 1 เป็น Management หรือ Native VLAN เพื่อป้องกัน VLAN Hopping Attack`,
+   - หลีกเลี่ยงการใช้ VLAN 1 เป็น Management หรือ Native VLAN เพื่อป้องกัน VLAN Hopping Attack${featureChecks}`,
       source: 'offline_engine'
     };
   }
@@ -245,7 +256,7 @@ function generateSecurityAuditResponse(parsedConfig: ParsedNetworkConfig | undef
      ? '- Enable `stp bpdu-protection` globally to protect edge access ports.'
      : '- Configure `spanning-tree bpduguard enable` on all PortFast access interfaces.'}
 3. **Native VLAN Hardening:**
-   - Migrate management and user subnets away from Default VLAN 1 to mitigate VLAN hopping attacks.`,
+   - Migrate management and user subnets away from Default VLAN 1 to mitigate VLAN hopping attacks.${featureChecks}`,
     source: 'offline_engine'
   };
 }

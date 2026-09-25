@@ -49,7 +49,14 @@ export function validateConfigFile(file: { name: string; size: number }): Config
 
 /** True when the parser found something worth analysing, not just a hostname line or free text. */
 export function hasExtractedContent(config: ExtractedNetworkConfig): boolean {
-  return config.interfaces.length > 0 || config.vlans.length > 0 || config.staticRoutes.length > 0;
+  return (
+    config.interfaces.length > 0 ||
+    config.vlans.length > 0 ||
+    config.staticRoutes.length > 0 ||
+    config.accessLists.length > 0 ||
+    config.nat.rules.length > 0 ||
+    config.routingProcesses.length > 0
+  );
 }
 
 export function configSourceFromSample(sample: SampleConfig): ConfigSource {

@@ -9,8 +9,8 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx --test src/core/parser/cliParser.test.ts src/core/configLoader.test.ts src/core/diagramExport.test.ts src/core/llm/llm.test.ts src/services/groqService.test.ts",
-    "test:parser": "tsx --test src/core/parser/cliParser.test.ts"
+    "test": "tsx --test src/core/parser/cliParser.test.ts src/core/parser/featureParsers.test.ts src/core/configLoader.test.ts src/core/diagramExport.test.ts src/core/llm/llm.test.ts src/services/groqService.test.ts src/services/offlineEngine.test.ts",
+    "test:parser": "tsx --test src/core/parser/cliParser.test.ts src/core/parser/featureParsers.test.ts"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",

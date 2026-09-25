@@ -120,6 +120,9 @@ export function parseNetworkConfig(rawConfig: string, vendorHint?: VendorHint): 
     interfaces: parsed.interfaces,
     sviGateways,
     staticRoutes: parsed.staticRoutes,
+    accessLists: parsed.accessLists,
+    nat: parsed.nat,
+    routingProcesses: parsed.routingProcesses,
     meta: {
       detectedBy: resolution.detectedBy,
       confidence: resolution.confidence,

@@ -12,18 +12,18 @@ import {
   normalizeAllowedVlans,
   normalizeMask,
   splitSections,
+  stripUndefined,
   toVlanId
 } from './utils';
+import { parseCiscoAcls, parseHuaweiAcls } from './aclParser';
+import { parseCiscoNat, parseHuaweiNat } from './natParser';
+import { parseCiscoRouting, parseHuaweiRouting } from './routingParser';
 
 /** Interfaces that are always Layer 3, regardless of switchport commands. */
 const L3_INTERFACE_RE = /^(vlan|vlanif|loopback|tunnel|null|nve|dialer|virtual-template|bdif|eth-trunk\d+\.\d+)/i;
 
 function isLayer3Name(name: string): boolean {
   return L3_INTERFACE_RE.test(name) || name.includes('.');
-}
-
-function stripUndefined<T extends object>(obj: T): T {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 }
 
 function addVlan(vlans: Map<number, VlanEntry>, vlanId: number, name?: string): void {
@@ -181,7 +181,10 @@ export function parseCiscoIos(rawConfig: string): VendorParseResult {
     hostname,
     vlans: [...vlans.values()],
     interfaces: drafts.map(d => finalizeInterface(d, isSwitch)),
-    staticRoutes
+    staticRoutes,
+    accessLists: parseCiscoAcls(sections),
+    nat: parseCiscoNat(sections),
+    routingProcesses: parseCiscoRouting(sections)
   };
 }
 
@@ -271,6 +274,9 @@ export function parseHuaweiVrp(rawConfig: string): VendorParseResult {
     hostname,
     vlans: [...vlans.values()],
     interfaces: drafts.map(d => finalizeInterface(d, isSwitch)),
-    staticRoutes
+    staticRoutes,
+    accessLists: parseHuaweiAcls(sections),
+    nat: parseHuaweiNat(sections),
+    routingProcesses: parseHuaweiRouting(sections)
   };
 }

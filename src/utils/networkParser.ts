@@ -217,7 +217,11 @@ export function parseNetworkConfig(content: string): ParsedNetworkConfig {
   };
 }
 
-export function generateSummaryMarkdown(parsed: ParsedNetworkConfig, lang: 'EN' | 'TH' = 'EN'): string {
+/**
+ * `detailSections` replaces this parser's raw-line routing list and ACL count, so callers that have
+ * the core parser's structured routing / NAT / ACL data can render that instead.
+ */
+export function generateSummaryMarkdown(parsed: ParsedNetworkConfig, lang: 'EN' | 'TH' = 'EN', detailSections?: string): string {
   const isTH = lang === 'TH';
 
   const vlanListStr = parsed.vlans.length > 0
@@ -256,11 +260,11 @@ ${vlanListStr}
 - **Access Ports (${accessInterfaces.length}):** ${accessInterfaces.slice(0, 5).map(i => `\`${i.name}\``).join(', ')}${accessInterfaces.length > 5 ? ' ...' : ''}
 - **Routed / L3 Interfaces:** ${routedInterfaces.map(i => `\`${i.name}\` (${i.ipAddress})`).join(', ') || 'ไม่มี'}
 
-#### 🧭 การตั้งค่า Routing
+${detailSections ?? `#### 🧭 การตั้งค่า Routing
 
 ${routingStr}
 
-${parsed.acls.length > 0 ? `#### 🛡️ Access Control Lists (ACLs)\n\n- พบ ${parsed.acls.length} รายการ ACL ป้องกันความปลอดภัย` : ''}
+${parsed.acls.length > 0 ? `#### 🛡️ Access Control Lists (ACLs)\n\n- พบ ${parsed.acls.length} รายการ ACL ป้องกันความปลอดภัย` : ''}`}
 `;
   }
 
@@ -283,11 +287,11 @@ ${vlanListStr}
 - **Access Ports (${accessInterfaces.length}):** ${accessInterfaces.slice(0, 5).map(i => `\`${i.name}\``).join(', ')}${accessInterfaces.length > 5 ? ' ...' : ''}
 - **Routed / L3 Interfaces:** ${routedInterfaces.map(i => `\`${i.name}\` (${i.ipAddress})`).join(', ') || 'None'}
 
-#### 🧭 Routing Protocols
+${detailSections ?? `#### 🧭 Routing Protocols
 
 ${routingStr}
 
-${parsed.acls.length > 0 ? `#### 🛡️ Security / ACLs\n\n- Found ${parsed.acls.length} ACL entries configured.` : ''}
+${parsed.acls.length > 0 ? `#### 🛡️ Security / ACLs\n\n- Found ${parsed.acls.length} ACL entries configured.` : ''}`}
 `;
 }
 

@@ -4,10 +4,46 @@ const IPV4_RE = /^(25[0-5]|2[0-4]\d|1?\d?\d)(\.(25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
 /** Headers that open a new section when the pasted config has lost its indentation. */
 const FLAT_SECTION_HEADER_RE =
-  /^(interface|vlan\s|router\s|ospf\s|bgp\s|isis\s|rip\s|line\s|user-interface|aaa|hostname|sysname|ip route|ip access-list|access-list|acl\s|ntp|snmp|logging|banner|version|service\s|dhcp\s|ip domain|ip vpn-instance|vrf\s)/i;
+  /^(interface|vlan\s|router\s|ospf\s|bgp\s|isis\s|rip\s|line\s|user-interface|aaa|hostname|sysname|ip route|ip access-list|access-list|acl\s|ip nat (?:pool|inside source|outside source)|nat address-group|ntp|snmp|logging|banner|version|service\s|dhcp\s|ip domain|ip vpn-instance|vrf\s)/i;
 
 export function isIPv4(value: string | undefined): boolean {
   return !!value && IPV4_RE.test(value);
+}
+
+function ipToNumber(ip: string): number {
+  return ip.split('.').reduce((n, octet) => ((n << 8) | Number(octet)) >>> 0, 0);
+}
+
+/** "0.0.0.255" -> 24; undefined for non-contiguous wildcards such as "0.0.255.0". */
+export function wildcardToPrefix(wildcard: string): number | undefined {
+  const bits = ipToNumber(wildcard);
+  // A contiguous wildcard is 0…01…1, so adding 1 carries through every set bit.
+  if (((bits + 1) & bits) !== 0) return undefined;
+  return 32 - bits.toString(2).replace(/0/g, '').length;
+}
+
+/**
+ * Renders an ACL address/wildcard pair as a CIDR prefix when possible, so both vendors' rules read
+ * the same way. Huawei allows "0" as shorthand for a host wildcard.
+ */
+export function formatAclAddress(address: string, wildcard = '0.0.0.0'): string {
+  const normalized = wildcard === '0' ? '0.0.0.0' : wildcard;
+  if (!isIPv4(normalized)) return address;
+  const prefix = wildcardToPrefix(normalized);
+  return prefix === undefined ? `${address} ${normalized}` : `${address}/${prefix}`;
+}
+
+/** Mask implied by an address's class, used by `network` commands that omit the mask. */
+export function classfulMask(address: string): string {
+  const first = Number(address.split('.')[0]);
+  return prefixToMask(first < 128 ? 8 : first < 192 ? 16 : 24);
+}
+
+/** OSPF area in either notation ("0", "0.0.0.0", "0.0.0.10") -> 10. */
+export function parseAreaId(value: string): number | undefined {
+  if (isIPv4(value)) return ipToNumber(value);
+  const id = Number(value);
+  return Number.isInteger(id) && id >= 0 ? id : undefined;
 }
 
 /** 24 -> "255.255.255.0" */
@@ -87,7 +123,9 @@ export function mergeAllowedVlans(current: string | undefined, spec: string, op:
 
 /**
  * Splits raw CLI text into sections: a top-level command followed by its
- * indented sub-commands. `!` (Cisco) and `#` (Huawei) close the current section.
+ * indented sub-commands. `!` (Cisco) and `#` (Huawei) close the current section,
+ * except when indented: both vendors print those inside BGP blocks to separate
+ * address families, which still belong to the section.
  *
  * If the config has no indentation at all (e.g. mangled by copy/paste), a
  * section only ends at a delimiter or at a recognised top-level header.
@@ -102,12 +140,13 @@ export function splitSections(rawConfig: string): ConfigSection[] {
     const trimmed = line.trim();
     if (!trimmed) return;
 
+    const indented = /^[ \t]/.test(line);
+
     if (trimmed.startsWith('!') || trimmed === '#') {
-      current = null;
+      if (!(current && indented)) current = null;
       return;
     }
 
-    const indented = /^[ \t]/.test(line);
     const continuesSection = hasIndentation ? indented : !FLAT_SECTION_HEADER_RE.test(trimmed);
 
     if (current && continuesSection) {
@@ -123,4 +162,20 @@ export function splitSections(rawConfig: string): ConfigSection[] {
 
 export function countLines(rawConfig: string): number {
   return rawConfig.replace(/\r\n?/g, '\n').split('\n').length;
+}
+
+/** "interface GigabitEthernet 0/0/1" -> "GigabitEthernet0/0/1"; undefined when the header is not an interface. */
+export function interfaceNameFromHeader(header: string): string | undefined {
+  const m = header.match(/^interface\s+(\S+)(?:\s+(\d\S*))?/i);
+  return m ? m[1] + (m[2] ?? '') : undefined;
+}
+
+/** Appends `value` unless it is already present, keeping first-seen order. */
+export function pushUnique<T>(list: T[], value: T): void {
+  if (!list.includes(value)) list.push(value);
+}
+
+/** Drops `undefined` fields so parser output deep-equals fixtures that simply omit them. */
+export function stripUndefined<T extends object>(obj: T): T {
+  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined)) as T;
 }

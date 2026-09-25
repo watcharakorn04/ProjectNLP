@@ -352,7 +352,8 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
         prompt: request.userText,
         intent: request.action,
         language: lang,
-        parsedConfig: uploadedFile?.parsedData
+        parsedConfig: uploadedFile?.parsedData,
+        extractedConfig: uploadedFile?.extractedConfig
       });
       return {
         ...reply,
