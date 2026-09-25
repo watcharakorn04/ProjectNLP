@@ -13,6 +13,7 @@ export {
   REDACTED,
   buildChatRequest,
   buildConfigContext,
+  buildCurrentDateTimeContext,
   buildSystemInstruction,
   buildUserTurn,
   redactSecrets,

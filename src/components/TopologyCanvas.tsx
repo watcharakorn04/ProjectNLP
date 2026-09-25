@@ -104,6 +104,7 @@ export const TopologyCanvas: React.FC<TopologyCanvasProps> = ({
             <MermaidViewer
               code={code}
               theme={theme}
+              language={language}
               variant="panel"
               onOpenFullscreen={onOpenFullscreen}
               toolbarLeading={leading}

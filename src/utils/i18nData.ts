@@ -88,7 +88,12 @@ export const i18n = {
     diagramCardExpand: 'เต็มจอ',
     diagramCardPending: 'กำลังสร้างแผนภาพ...',
     jumpToLatest: 'ไปยังข้อความล่าสุด',
-    generationStopped: 'หยุดการสร้างคำตอบแล้ว'
+    generationStopped: 'หยุดการสร้างคำตอบแล้ว',
+    modeBadgeOnline: 'Groq AI (ออนไลน์)',
+    modeBadgeOffline: 'Smart Rule Engine (ออฟไลน์)',
+    exportPngTitle: 'ดาวน์โหลดแผนภาพเป็นรูปภาพ PNG',
+    exportSvgTitle: 'ดาวน์โหลดแผนภาพเป็นไฟล์ SVG',
+    exportFailed: 'ส่งออกแผนภาพไม่สำเร็จ'
   },
   EN: {
     appTitle: 'NetBot',
@@ -179,6 +184,11 @@ export const i18n = {
     diagramCardExpand: 'Fullscreen',
     diagramCardPending: 'Drawing diagram...',
     jumpToLatest: 'Jump to latest',
-    generationStopped: 'Generation stopped'
+    generationStopped: 'Generation stopped',
+    modeBadgeOnline: 'Groq AI (Online)',
+    modeBadgeOffline: 'Smart Rule Engine (Offline)',
+    exportPngTitle: 'Download diagram as PNG image',
+    exportSvgTitle: 'Download diagram as SVG file',
+    exportFailed: 'Could not export the diagram'
   }
 };

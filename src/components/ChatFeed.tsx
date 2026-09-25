@@ -62,6 +62,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
   const t = i18n[settings.currentLanguage];
   const isDark = settings.theme === 'dark';
   const isOnline = hasVerifiedKey(settings.credentials);
+  const isValidatingKey = settings.credentials.status === 'validating';
   const isTH = settings.currentLanguage === 'TH';
 
   // Content growth (streamed text, new replies) is followed by the ResizeObserver while pinned.
@@ -175,6 +176,34 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
         {/* Right Header Actions */}
         <div className="flex items-center gap-1.5">
+          {/* Answer engine: Groq when a verified key is active, otherwise the offline rule engine */}
+          <span
+            role="status"
+            aria-label={isOnline ? t.modeBadgeOnline : t.modeBadgeOffline}
+            title={isValidatingKey ? t.apiKeyStatusValidating : isOnline ? t.onlineModeNotice : t.offlineModeNotice}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-semibold whitespace-nowrap ${
+              isOnline
+                ? isDark
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
+                  : 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                : isDark
+                ? 'border-amber-500/30 bg-amber-500/10 text-amber-400'
+                : 'border-amber-300 bg-amber-50 text-amber-700'
+            }`}
+          >
+            <span className="relative flex h-2 w-2 shrink-0">
+              {(isOnline || isValidatingKey) && (
+                <span
+                  className={`absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping ${
+                    isOnline ? 'bg-emerald-400' : 'bg-amber-400'
+                  }`}
+                />
+              )}
+              <span className={`relative inline-flex h-2 w-2 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+            </span>
+            <span className="hidden sm:inline">{isOnline ? t.modeBadgeOnline : t.modeBadgeOffline}</span>
+          </span>
+
           {messages.length > 0 && (
             <button
               onClick={handleExportChat}

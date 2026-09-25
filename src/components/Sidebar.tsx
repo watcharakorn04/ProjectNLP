@@ -245,7 +245,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              TH (ไทย)
+              TH
             </button>
             <button
               onClick={() => onUpdateSettings({ currentLanguage: 'EN' })}

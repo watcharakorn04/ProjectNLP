@@ -15,14 +15,23 @@ import type { AppTheme } from '../types/chat';
 
 export type MermaidRenderResult = { ok: true; svg: string } | { ok: false; error: string };
 
+export interface MermaidRenderOptions {
+  /**
+   * HTML labels (the default) render inside `<foreignObject>`. Set false for plain SVG
+   * `<text>` labels, which some browsers need before the SVG can be drawn onto a canvas.
+   */
+  htmlLabels?: boolean;
+}
+
 const MAX_DIAGRAM_CHARS = 20_000;
 
 const FONT = "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif";
 
-function buildConfig(theme: AppTheme): MermaidConfig {
+function buildConfig(theme: AppTheme, htmlLabels: boolean): MermaidConfig {
   const isDark = theme === 'dark';
   return {
     startOnLoad: false,
+    htmlLabels,
     securityLevel: 'strict',
     suppressErrorRendering: true,
     theme: isDark ? 'dark' : 'neutral',
@@ -30,7 +39,7 @@ function buildConfig(theme: AppTheme): MermaidConfig {
     fontSize: 15,
     flowchart: {
       useMaxWidth: false,
-      htmlLabels: true,
+      htmlLabels,
       curve: 'basis',
       nodeSpacing: 50,
       rankSpacing: 60,
@@ -119,14 +128,14 @@ function describeError(err: unknown): string {
 let renderQueue: Promise<unknown> = Promise.resolve();
 let renderCounter = 0;
 
-async function renderNow(code: string, theme: AppTheme): Promise<MermaidRenderResult> {
+async function renderNow(code: string, theme: AppTheme, options: MermaidRenderOptions): Promise<MermaidRenderResult> {
   const source = code.trim();
   if (!source) return { ok: false, error: 'Diagram is empty' };
   if (source.length > MAX_DIAGRAM_CHARS) return { ok: false, error: `Diagram exceeds ${MAX_DIAGRAM_CHARS} characters` };
 
   const id = `netbot-mermaid-${++renderCounter}`;
   try {
-    mermaid.initialize(buildConfig(theme));
+    mermaid.initialize(buildConfig(theme, options.htmlLabels ?? true));
     await mermaid.parse(source);
     const { svg } = await mermaid.render(id, source);
     return { ok: true, svg: makeResponsive(svg) };
@@ -138,8 +147,12 @@ async function renderNow(code: string, theme: AppTheme): Promise<MermaidRenderRe
   }
 }
 
-export function renderMermaid(code: string, theme: AppTheme): Promise<MermaidRenderResult> {
-  const task = renderQueue.then(() => renderNow(code, theme));
+export function renderMermaid(
+  code: string,
+  theme: AppTheme,
+  options: MermaidRenderOptions = {}
+): Promise<MermaidRenderResult> {
+  const task = renderQueue.then(() => renderNow(code, theme, options));
   renderQueue = task.catch(() => undefined);
   return task;
 }

@@ -51,7 +51,7 @@ export const TopologyModal: React.FC<TopologyModalProps> = ({
 
         <div className="flex-1 overflow-auto p-4 flex flex-col items-center justify-center">
           <div className="w-full h-full max-w-4xl">
-            <MermaidViewer code={mermaidCode} theme={theme} title="Fullscreen View" />
+            <MermaidViewer code={mermaidCode} theme={theme} language={language} title="Fullscreen View" />
           </div>
         </div>
       </div>

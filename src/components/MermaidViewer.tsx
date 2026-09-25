@@ -1,10 +1,26 @@
 import React, { useEffect, useState } from 'react';
-import { ZoomIn, ZoomOut, RotateCcw, Maximize2, Download, Copy, Check, AlertCircle, Move } from 'lucide-react';
+import {
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  Maximize2,
+  FileImage,
+  FileCode2,
+  Loader2,
+  Copy,
+  Check,
+  AlertCircle,
+  Move
+} from 'lucide-react';
 import { renderMermaid } from '../services/mermaidRenderer';
+import { exportDiagramPng, exportDiagramSvg, type DiagramExportResult } from '../services/diagramExport';
+import { i18n } from '../utils/i18nData';
+import type { SupportedLanguage } from '../types/chat';
 
 interface MermaidViewerProps {
   code: string;
   theme?: 'dark' | 'light';
+  language?: SupportedLanguage;
   title?: string;
   onOpenFullscreen?: (code: string) => void;
   /** `card`: self-contained bordered card (chat, modal). `panel`: fills its parent (topology canvas). */
@@ -20,9 +36,13 @@ type RenderState = { status: 'rendering' } | { status: 'ready'; svg: string } | 
 /** Coalesces rapid code changes (e.g. while a reply is streaming) into one render. */
 const RENDER_DEBOUNCE_MS = 120;
 
+/** How long an export failure stays in the status bar. */
+const EXPORT_ERROR_MS = 4000;
+
 const MermaidViewerInner: React.FC<MermaidViewerProps> = ({
   code,
   theme = 'dark',
+  language = 'EN',
   title = 'Network Topology',
   onOpenFullscreen,
   variant = 'card',
@@ -32,6 +52,15 @@ const MermaidViewerInner: React.FC<MermaidViewerProps> = ({
   const [state, setState] = useState<RenderState>({ status: 'rendering' });
   const [zoomLevel, setZoomLevel] = useState<number>(1);
   const [copied, setCopied] = useState<boolean>(false);
+  const [exportingPng, setExportingPng] = useState<boolean>(false);
+  const [exportFailed, setExportFailed] = useState<boolean>(false);
+  const t = i18n[language];
+
+  useEffect(() => {
+    if (!exportFailed) return;
+    const timer = setTimeout(() => setExportFailed(false), EXPORT_ERROR_MS);
+    return () => clearTimeout(timer);
+  }, [exportFailed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,21 +98,35 @@ const MermaidViewerInner: React.FC<MermaidViewerProps> = ({
     }
   };
 
+  const reportExport = (result: DiagramExportResult) => {
+    if (result.ok) return;
+    console.warn('Diagram export failed:', result.error);
+    setExportFailed(true);
+  };
+
   const handleDownloadSvg = () => {
     if (state.status !== 'ready') return;
-    const blob = new Blob([state.svg], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `network_topology_${Date.now()}.svg`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    reportExport(exportDiagramSvg(state.svg, theme));
+  };
+
+  const handleDownloadPng = async () => {
+    if (state.status !== 'ready' || exportingPng) return;
+    setExportingPng(true);
+    try {
+      reportExport(await exportDiagramPng(state.svg, code, theme));
+    } finally {
+      setExportingPng(false);
+    }
   };
 
   const isDark = theme === 'dark';
   const isPanel = variant === 'panel';
+
+  const exportButtonClass = `flex items-center gap-1 px-2 py-1 rounded-lg border text-xs font-medium transition-all cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
+    isDark
+      ? 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:border-cyan-500/50'
+      : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-800 hover:border-blue-400'
+  }`;
 
   return (
     <div
@@ -175,18 +218,31 @@ const MermaidViewerInner: React.FC<MermaidViewerProps> = ({
             </button>
           )}
 
-          {/* Download SVG */}
+          {/* Export PNG / SVG */}
+          <button
+            onClick={handleDownloadPng}
+            disabled={state.status !== 'ready' || exportingPng}
+            title={t.exportPngTitle}
+            aria-label={t.exportPngTitle}
+            className={exportButtonClass}
+          >
+            {exportingPng ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400" />
+            ) : (
+              <FileImage className="w-3.5 h-3.5 text-emerald-400" />
+            )}
+            <span>PNG</span>
+          </button>
+
           <button
             onClick={handleDownloadSvg}
             disabled={state.status !== 'ready'}
-            title="Download SVG file"
-            className={`p-1.5 rounded-lg border transition-all cursor-pointer active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed ${
-              isDark
-                ? 'border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-200'
-                : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-800'
-            }`}
+            title={t.exportSvgTitle}
+            aria-label={t.exportSvgTitle}
+            className={exportButtonClass}
           >
-            <Download className="w-3.5 h-3.5" />
+            <FileCode2 className="w-3.5 h-3.5 text-violet-400" />
+            <span>SVG</span>
           </button>
 
           {/* Copy Mermaid Code */}
@@ -243,6 +299,12 @@ const MermaidViewerInner: React.FC<MermaidViewerProps> = ({
           <Move className="w-3 h-3" />
           <span>Scroll to pan diagram when zoomed</span>
         </span>
+        {exportFailed && (
+          <span role="status" className="flex items-center gap-1 text-amber-400">
+            <AlertCircle className="w-3 h-3" />
+            {t.exportFailed}
+          </span>
+        )}
         <span className={zoomLevel !== 1 ? 'font-bold text-cyan-400' : ''}>
           Scale: {Math.round(zoomLevel * 100)}%
         </span>

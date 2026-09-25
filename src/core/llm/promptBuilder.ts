@@ -3,10 +3,10 @@ import type { UploadedConfigFile } from '../../types/network';
 import type { ChatRequestBody, OpenAiMessage } from './openaiProtocol';
 
 /**
- * Builds Groq chat request bodies. Pure: the same inputs always produce the same body.
+ * Builds Groq chat request bodies. Pure: the same inputs (including `now`) always produce the same body.
  *
  * Layout of every request's `messages`:
- * - one `system` message: NetBot persona, answer language and output-format rules.
+ * - one `system` message: NetBot persona, answer language, current date/time and output-format rules.
  * - a short slice of prior chat turns, then one final `user` message that carries the
  *   task plus the current device context (parsed JSON + redacted raw CLI). Context is attached
  *   to the final turn only, so it is sent once per request rather than repeated in history.
@@ -34,7 +34,36 @@ const MERMAID_RULES = `Mermaid rules (apply to every diagram you output):
 - Allowed label markup: <br/> only. Never use click directives, %%{init}%% directives, links or scripts.
 - Escape nothing else; avoid parentheses and quotes inside labels.`;
 
-export function buildSystemInstruction(language: SupportedLanguage): string {
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** ISO 8601 in the device's local time with its UTC offset, so the model gets an unambiguous Gregorian date. */
+function toLocalIsoString(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const shifted = new Date(date.getTime() + offsetMinutes * 60_000);
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  return `${shifted.toISOString().slice(0, 19)}${sign}${pad2(Math.floor(abs / 60))}:${pad2(abs % 60)}`;
+}
+
+/**
+ * Describes `now` for the system prompt. The model has no clock of its own, so without this it
+ * answers "what day is it" / certificate-expiry questions from its training cutoff.
+ */
+export function buildCurrentDateTimeContext(now: Date, language: SupportedLanguage): string {
+  const locale = language === 'TH' ? 'th-TH' : 'en-US';
+  const localDate = now.toLocaleDateString(locale, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const localTime = now.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', hour12: false });
+  const eraNote =
+    language === 'TH' ? '\n- Thai dates use the Buddhist Era (BE = CE + 543); give years in BE when answering in Thai.' : '';
+
+  return `Current System Date/Time (from the user's device clock):
+- ISO 8601: ${toLocalIsoString(now)}
+- Local: ${localDate}, ${localTime}
+- Treat this as "now" for any question about dates, days of the week, calendars or elapsed time
+  (e.g. "what day is it", certificate or licence expiry, clock / NTP settings). Do not use your training cutoff date.${eraNote}`;
+}
+
+export function buildSystemInstruction(language: SupportedLanguage, now: Date = new Date()): string {
   const answerLanguage =
     language === 'TH'
       ? 'Thai (ภาษาไทย). Keep networking terms, CLI commands, interface names and IP addresses in English.'
@@ -44,6 +73,8 @@ export function buildSystemInstruction(language: SupportedLanguage): string {
 You help network engineering students and junior engineers understand, audit, translate and visualise device configurations.
 
 Answer language: ${answerLanguage}
+
+${buildCurrentDateTimeContext(now, language)}
 
 Grounding rules:
 - The device context is provided as <parsed_config_json> (structured parser output) and <raw_cli> (the running config).
@@ -178,9 +209,11 @@ export interface ChatRequestInput {
   /** Free-text question. Ignored when `action` is set. */
   userText?: string;
   action?: QuickActionType;
+  /** Clock used for the date/time in the system prompt. Defaults to the current time. */
+  now?: Date;
 }
 
-export function buildUserTurn({ file, userText, action }: Omit<ChatRequestInput, 'language' | 'history'>): string {
+export function buildUserTurn({ file, userText, action }: Omit<ChatRequestInput, 'language' | 'history' | 'now'>): string {
   const task = action ? QUICK_ACTION_TASKS[action] : `Question: ${userText?.trim() ?? ''}`;
   return `${task}\n\n${buildConfigContext(file)}`;
 }
@@ -193,7 +226,7 @@ export function buildChatRequest(input: ChatRequestInput): ChatRequestBody {
 
   return {
     messages: [
-      { role: 'system', content: buildSystemInstruction(input.language) },
+      { role: 'system', content: buildSystemInstruction(input.language, input.now) },
       ...history,
       { role: 'user', content: buildUserTurn(input) }
     ],

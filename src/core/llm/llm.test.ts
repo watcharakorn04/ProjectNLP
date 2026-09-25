@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   MAX_OUTPUT_TOKENS,
   buildChatRequest,
+  buildSystemInstruction,
   closeOpenFence,
   createSseParser,
   extractMermaid,
@@ -174,6 +175,20 @@ describe('buildChatRequest', () => {
     assert.match(body.messages[3].content, /Question: Q3/);
     assert.match(body.messages[3].content, /No configuration file is loaded/);
     assert.equal(body.temperature, 0.4);
+  });
+
+  test('system prompt carries the injected date/time in the answer language', () => {
+    const now = new Date(2026, 8, 25, 14, 30);
+    const th = buildSystemInstruction('TH', now);
+    assert.match(th, /Current System Date\/Time/);
+    assert.match(th, /ISO 8601: 2026-09-25T14:30:00[+-]\d{2}:\d{2}/);
+    assert.ok(th.includes(now.toLocaleDateString('th-TH', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })));
+    assert.match(th, /2569/);
+    assert.match(th, /Buddhist Era/);
+
+    const en = buildChatRequest({ language: 'EN', file: null, history: [], userText: 'What day is it?', now }).messages[0].content;
+    assert.match(en, /Friday, September 25, 2026, 14:30/);
+    assert.doesNotMatch(en, /Buddhist Era/);
   });
 });
 
