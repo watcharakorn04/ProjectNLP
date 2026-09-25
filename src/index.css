@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  body {
+    font-family: var(--font-sans);
+  }
+
+  code, pre, kbd {
+    font-family: var(--font-mono);
+  }
+}
+
+/* Custom sleek scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+/* Mermaid SVG Diagram Enhancements for High Legibility */
+.node text, .node .label {
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important;
+  font-size: 14.5px !important;
+  font-weight: 500 !important;
+  line-height: 1.4 !important;
+}
+
+.node .label b {
+  font-weight: 700 !important;
+  font-size: 15px !important;
+}
+
+.edgeLabel text, .edgeLabel span {
+  font-family: 'Fira Code', monospace !important;
+  font-size: 12.5px !important;
+  font-weight: 600 !important;
+}
+
+svg[id^="mermaid-"], svg[id^="diagram_"] {
+  max-width: 100% !important;
+  height: auto !important;
+  overflow: visible !important;
+}
