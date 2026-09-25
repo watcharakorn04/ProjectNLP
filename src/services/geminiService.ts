@@ -13,6 +13,12 @@ import type { GeminiRequestBody, GeminiUsage } from '../core/llm';
 export const GEMINI_MODEL = 'gemini-3.8-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+/** Transient statuses (overloaded / rate limited) worth retrying before giving up on Gemini. */
+const RETRYABLE_STATUSES = new Set([429, 503]);
+const MAX_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 1000;
+const RETRY_MAX_DELAY_MS = 8000;
+
 export type GeminiErrorKind =
   | 'invalid-key'
   | 'rate-limit'
@@ -86,6 +92,64 @@ export function toGeminiError(err: unknown, apiKey?: string): GeminiError {
   return new GeminiError('network', redactApiKey(message || 'Network error contacting Gemini', apiKey));
 }
 
+/** Only Gemini 2.5+ models accept `thinkingConfig`; older models reject the request if it is present. */
+function supportsThinking(model: string): boolean {
+  const version = /^gemini-(\d+(?:\.\d+)?)/.exec(model)?.[1];
+  return version !== undefined && Number(version) >= 2.5;
+}
+
+function adaptBodyForModel(body: GeminiRequestBody, model: string): GeminiRequestBody {
+  if (supportsThinking(model) || !body.generationConfig.thinkingConfig) return body;
+  const { thinkingConfig: _unsupported, ...generationConfig } = body.generationConfig;
+  return { ...body, generationConfig };
+}
+
+/** Exponential backoff with jitter, honouring a numeric `Retry-After` header when the server sends one. */
+function retryDelayMs(attempt: number, res: Response): number {
+  const retryAfterSeconds = Number(res.headers.get('retry-after'));
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.min(retryAfterSeconds * 1000, RETRY_MAX_DELAY_MS);
+  }
+  const backoff = RETRY_BASE_DELAY_MS * 2 ** attempt;
+  return Math.min(backoff + Math.random() * backoff * 0.5, RETRY_MAX_DELAY_MS);
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new DOMException('Aborted', 'AbortError'));
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+/**
+ * POSTs to Gemini, retrying up to `MAX_RETRIES` times on 429/503 before any response body is consumed.
+ * Resolves with an OK response, or rejects with a `GeminiError` (`aborted` when the signal fires, even mid-backoff).
+ */
+async function fetchWithRetry(url: string, init: RequestInit, apiKey: string): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(url, init);
+      if (res.ok) return res;
+      if (attempt >= MAX_RETRIES || !RETRYABLE_STATUSES.has(res.status)) throw await errorFromResponse(res, apiKey);
+
+      const delay = retryDelayMs(attempt, res);
+      await res.body?.cancel().catch(() => undefined);
+      console.warn(`Gemini returned HTTP ${res.status}; retrying in ${Math.round(delay)} ms (${attempt + 1}/${MAX_RETRIES})`);
+      await sleep(delay, init.signal);
+    } catch (err) {
+      throw toGeminiError(err, apiKey);
+    }
+  }
+}
+
 /**
  * Streams a completion over Server-Sent Events (`streamGenerateContent?alt=sse`),
  * calling `onText` with each text delta as it arrives.
@@ -99,13 +163,8 @@ export async function streamGeminiContent(
   const { signal, onText, model = GEMINI_MODEL } = options;
   const url = `${API_BASE}/${encodeURIComponent(model)}:streamGenerateContent?alt=sse`;
 
-  let res: Response;
-  try {
-    res = await fetch(url, requestInit(apiKey, body, signal));
-  } catch (err) {
-    throw toGeminiError(err, apiKey);
-  }
-  if (!res.ok) throw await errorFromResponse(res, apiKey);
+  // Retries happen only before the stream starts, so no partial text is ever emitted twice.
+  const res = await fetchWithRetry(url, requestInit(apiKey, adaptBodyForModel(body, model), signal), apiKey);
   if (!res.body) throw new GeminiError('server', 'Streaming is not supported by this browser');
 
   const reader = res.body.getReader();
@@ -165,20 +224,17 @@ export async function validateApiKey(apiKey: string, signal?: AbortSignal): Prom
   const key = apiKey.trim();
   if (key.length < 10) return { valid: false, message: 'API key is too short or empty' };
 
+  const generationConfig = supportsThinking(GEMINI_MODEL)
+    ? { maxOutputTokens: 5, thinkingConfig: { thinkingBudget: 0 } }
+    : { maxOutputTokens: 5 };
+
   try {
-    const res = await fetch(
-      `${API_BASE}/${GEMINI_MODEL}:generateContent`,
-      requestInit(
-        key,
-        {
-          contents: [{ parts: [{ text: 'Ping' }] }],
-          generationConfig: { maxOutputTokens: 5, thinkingConfig: { thinkingBudget: 0 } }
-        },
-        signal
-      )
+    await fetchWithRetry(
+      `${API_BASE}/${encodeURIComponent(GEMINI_MODEL)}:generateContent`,
+      requestInit(key, { contents: [{ parts: [{ text: 'Ping' }] }], generationConfig }, signal),
+      key
     );
-    if (res.ok) return { valid: true, message: 'Valid API Key connected successfully!' };
-    return { valid: false, message: (await errorFromResponse(res, key)).message };
+    return { valid: true, message: 'Valid API Key connected successfully!' };
   } catch (err) {
     return { valid: false, message: toGeminiError(err, key).message };
   }
