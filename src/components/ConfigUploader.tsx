@@ -1,13 +1,21 @@
 import React, { useRef, useState } from 'react';
-import { Upload, FileText, CheckCircle2, AlertTriangle, Eye, Trash2, Sparkles } from 'lucide-react';
+import { Upload, FileText, Eye, Trash2, Sparkles } from 'lucide-react';
 import { UploadedConfigFile, VendorType } from '../types/network';
-import { detectVendor } from '../utils/vendorDetector';
-import { parseNetworkConfig } from '../utils/networkParser';
+import {
+  ACCEPTED_CONFIG_EXTENSIONS,
+  ConfigLoadResult,
+  configLoadFailure,
+  configSourceFromSample,
+  loadConfigSource,
+  validateConfigFile
+} from '../core/configLoader';
 import { SAMPLE_CONFIGS, SampleConfig } from '../utils/sampleConfigs';
+import { ParsedConfigSummary } from './ParsedConfigSummary';
 
 interface ConfigUploaderProps {
   uploadedFile: UploadedConfigFile | null;
-  onFileLoaded: (file: UploadedConfigFile) => void;
+  /** Receives every load attempt; the parent owns state updates and error notifications. */
+  onConfigLoaded: (result: ConfigLoadResult) => void;
   onRemoveFile: () => void;
   onOpenRawViewer: () => void;
   theme?: 'dark' | 'light';
@@ -16,7 +24,7 @@ interface ConfigUploaderProps {
 
 export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
   uploadedFile,
-  onFileLoaded,
+  onConfigLoaded,
   onRemoveFile,
   onOpenRawViewer,
   theme = 'dark',
@@ -27,55 +35,49 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
   const isDark = theme === 'dark';
   const isTH = language === 'TH';
 
-  const handleProcessText = (content: string, fileName: string, sizeBytes: number) => {
-    const detection = detectVendor(content);
-    const parsed = parseNetworkConfig(content);
-    const fileSizeFormatted = sizeBytes > 1024 ? `${(sizeBytes / 1024).toFixed(1)} KB` : `${sizeBytes} B`;
-
-    const newFile: UploadedConfigFile = {
-      fileName,
-      fileSize: fileSizeFormatted,
-      rawContent: content,
-      detectedVendor: detection.vendor,
-      parsedData: parsed,
-      uploadedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-
-    onFileLoaded(newFile);
-  };
-
-  const handleFileDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      readFile(file);
-    }
-  };
-
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      const file = e.target.files[0];
-      readFile(file);
-    }
-  };
-
   const readFile = (file: File) => {
+    const invalid = validateConfigFile(file);
+    if (invalid) {
+      onConfigLoaded(configLoadFailure(file.name, invalid));
+      return;
+    }
+
     const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result as string;
-      if (content) {
-        handleProcessText(content, file.name, file.size);
-      }
+    reader.onload = () => {
+      const rawContent = typeof reader.result === 'string' ? reader.result : '';
+      onConfigLoaded(loadConfigSource({ fileName: file.name, rawContent, sizeBytes: file.size }));
     };
+    reader.onerror = () => onConfigLoaded(configLoadFailure(file.name, 'read-failed'));
     reader.readAsText(file);
   };
 
-  const loadSample = (sample: SampleConfig) => {
-    const sizeBytes = new Blob([sample.rawContent]).size;
-    handleProcessText(sample.rawContent, sample.fileName, sizeBytes);
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    // Reset so picking the same file again (e.g. after fixing it) still fires onChange.
+    e.target.value = '';
+    if (file) readFile(file);
   };
+
+  // Shared by the empty dropzone and the loaded-file card, so a new file can be dropped over the old one.
+  const dropHandlers = {
+    onDragOver: (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+    },
+    onDragLeave: () => setIsDragging(false),
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) readFile(file);
+    }
+  };
+
+  const loadSample = (sample: SampleConfig) => {
+    onConfigLoaded(loadConfigSource(configSourceFromSample(sample)));
+  };
+
+  const extracted = uploadedFile?.extractedConfig;
 
   // Vendor Badge color
   const getVendorBadgeStyle = (vendor: VendorType) => {
@@ -100,7 +102,7 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".txt,.cfg,.conf,.log"
+        accept={ACCEPTED_CONFIG_EXTENSIONS.join(',')}
         className="hidden"
         onChange={handleFileInputChange}
       />
@@ -108,12 +110,7 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
       {/* Upload Box or Badge */}
       {!uploadedFile ? (
         <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragging(true);
-          }}
-          onDragLeave={() => setIsDragging(false)}
-          onDrop={handleFileDrop}
+          {...dropHandlers}
           onClick={() => fileInputRef.current?.click()}
           className={`group relative flex flex-col items-center justify-center p-4 border-2 border-dashed rounded-xl cursor-pointer text-center transition-all ${
             isDragging
@@ -140,8 +137,11 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
       ) : (
         /* Uploaded File Badge */
         <div
+          {...dropHandlers}
           className={`p-3 rounded-xl border transition-all ${
-            isDark
+            isDragging
+              ? 'border-cyan-400 bg-cyan-500/10 ring-1 ring-cyan-400/40'
+              : isDark
               ? 'bg-slate-900/90 border-slate-700/80 shadow-md shadow-slate-950/40'
               : 'bg-white border-slate-200 shadow-sm'
           }`}
@@ -162,7 +162,7 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
                 <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5 font-mono">
                   <span>{uploadedFile.fileSize}</span>
                   <span>•</span>
-                  <span>{uploadedFile.parsedData?.rawLinesCount || 0} {isTH ? 'บรรทัด' : 'lines'}</span>
+                  <span>{extracted?.meta.lineCount ?? uploadedFile.parsedData?.rawLinesCount ?? 0} {isTH ? 'บรรทัด' : 'lines'}</span>
                 </div>
               </div>
             </div>
@@ -176,19 +176,34 @@ export const ConfigUploader: React.FC<ConfigUploaderProps> = ({
             </button>
           </div>
 
-          {/* Auto-detected Vendor Tag */}
-          <div className="mt-2.5 pt-2.5 border-t border-slate-800/60 flex items-center justify-between">
-            <span className="text-[11px] font-medium text-slate-400">
-              {isTH ? 'ตรวจพบระบบ:' : 'Auto-detected:'}
-            </span>
-            <span
-              className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${getVendorBadgeStyle(
-                uploadedFile.detectedVendor
-              )}`}
-            >
-              {uploadedFile.detectedVendor}
-            </span>
+          {/* Hostname & Vendor Tag */}
+          <div className="mt-2.5 pt-2.5 border-t border-slate-800/60 space-y-1.5">
+            {extracted && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-medium text-slate-400">{isTH ? 'ชื่ออุปกรณ์:' : 'Hostname:'}</span>
+                <span className={`text-[11px] font-bold font-mono truncate ${isDark ? 'text-slate-100' : 'text-slate-900'}`}>
+                  {extracted.hostname}
+                </span>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium text-slate-400">
+                {extracted?.meta.detectedBy === 'hint'
+                  ? isTH ? 'ระบบ:' : 'Vendor:'
+                  : isTH ? 'ตรวจพบระบบ:' : 'Auto-detected:'}
+              </span>
+              <span
+                title={extracted ? `${extracted.meta.confidence}% confidence` : undefined}
+                className={`px-2 py-0.5 rounded-md text-[11px] font-bold border ${getVendorBadgeStyle(
+                  uploadedFile.detectedVendor
+                )}`}
+              >
+                {uploadedFile.detectedVendor}
+              </span>
+            </div>
           </div>
+
+          {extracted && <ParsedConfigSummary config={extracted} isDark={isDark} isTH={isTH} />}
 
           {/* Actions on file */}
           <div className="mt-2 flex gap-1.5">

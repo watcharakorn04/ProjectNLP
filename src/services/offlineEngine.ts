@@ -1,146 +1,45 @@
-import { ParsedNetworkConfig, VendorType } from '../types/network';
-import { generateSummaryMarkdown } from './networkParser';
-import { generateMermaidTopology } from './diagramGenerator';
+import { ParsedNetworkConfig } from '../types/network';
+import type { SupportedLanguage } from '../types/chat';
+import type { QuickActionType } from '../core/llm';
+import { generateSummaryMarkdown } from '../utils/networkParser';
+import { generateMermaidTopology } from '../utils/diagramGenerator';
 
-export interface GeminiResponse {
+/**
+ * Smart offline rule engine: answers from the parsed config without any network call.
+ * Used when no Gemini key is configured, and as the fallback when a Gemini request fails.
+ */
+
+export interface OfflineResponse {
   text: string;
   diagramType?: 'mermaid' | 'ascii';
   diagramCode?: string;
-  source: 'gemini' | 'offline_engine';
+  source: 'offline_engine';
 }
 
-export async function validateApiKey(apiKey: string): Promise<{ valid: boolean; message: string }> {
-  if (!apiKey || apiKey.trim().length < 10) {
-    return { valid: false, message: 'API key is too short or empty' };
-  }
-
-  try {
-    const trimmedKey = apiKey.trim();
-    // Test with a lightweight model list or generate request
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${trimmedKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: 'Ping' }] }],
-          generationConfig: { maxOutputTokens: 5 }
-        })
-      }
-    );
-
-    if (response.ok) {
-      return { valid: true, message: 'Valid API Key connected successfully!' };
-    }
-
-    const errorData = await response.json().catch(() => null);
-    const errDetail = errorData?.error?.message || `HTTP ${response.status} error`;
-    return { valid: false, message: errDetail };
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : 'Network error connecting to Gemini API';
-    return { valid: false, message: errorMsg };
-  }
-}
-
-export async function queryNetBot(params: {
-  prompt: string;
-  apiKey?: string;
-  language: 'EN' | 'TH';
-  activeConfigRaw?: string;
-  parsedConfig?: ParsedNetworkConfig;
-  chatHistory?: { role: 'user' | 'model'; parts: { text: string }[] }[];
-}): Promise<GeminiResponse> {
-  const { prompt, apiKey, language, activeConfigRaw, parsedConfig, chatHistory } = params;
-  const isTH = language === 'TH';
-
-  // If user has a valid API key, try calling Gemini 2.5-flash
-  if (apiKey && apiKey.trim().length > 15) {
-    try {
-      const systemInstruction = `You are NetBot, a senior network engineering instructor and multi-vendor network specialist (Cisco IOS & Huawei VRP).
-Your task is to help network engineering students and junior engineers understand, analyze, compare, and visualize configurations.
-Target language: ${isTH ? 'Thai (ภาษาไทย) with clear technical networking terms' : 'English'}.
-When asked to summarize or analyze:
-- Break down Hostname, Vendor (Cisco IOS or Huawei VRP), Active VLANs, SVI/Vlanif IP addresses, Trunks, and Routing protocols.
-- If appropriate or requested to provide a topology, output a valid Mermaid.js graph inside \`\`\`mermaid\n...\n\`\`\` code blocks.
-- When comparing commands, show clear Cisco vs Huawei syntax side-by-side with explanations.
-${activeConfigRaw ? `Current loaded device configuration:\n\`\`\`\n${activeConfigRaw.slice(0, 4000)}\n\`\`\`` : 'No configuration file currently loaded.'}
-Always format CLI commands in code blocks with vendor indication.`;
-
-      const contents = [];
-      if (chatHistory && chatHistory.length > 0) {
-        contents.push(...chatHistory.slice(-4));
-      }
-      contents.push({
-        role: 'user',
-        parts: [{ text: `${prompt}` }]
-      });
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey.trim()}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents,
-            generationConfig: {
-              temperature: 0.3,
-              maxOutputTokens: 2048
-            }
-          })
-        }
-      );
-
-      if (res.ok) {
-        const data = await res.json();
-        const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (candidateText) {
-          // Extract mermaid diagram if present
-          const mermaidMatch = candidateText.match(/```mermaid\s*([\s\S]*?)```/);
-          let diagramCode: string | undefined;
-          let diagramType: 'mermaid' | undefined;
-          let cleanText = candidateText;
-
-          if (mermaidMatch) {
-            diagramCode = mermaidMatch[1].trim();
-            diagramType = 'mermaid';
-            // Keep text but clean up or reference
-          }
-
-          return {
-            text: cleanText,
-            diagramType,
-            diagramCode,
-            source: 'gemini'
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Gemini API call failed, falling back to smart offline engine:', err);
-    }
-  }
-
-  // Smart Offline Network Rule Engine
-  return generateOfflineSmartResponse({
-    prompt,
-    language,
-    activeConfigRaw,
-    parsedConfig
-  });
-}
-
-function generateOfflineSmartResponse(params: {
-  prompt: string;
-  language: 'EN' | 'TH';
-  activeConfigRaw?: string;
-  parsedConfig?: ParsedNetworkConfig;
-}): GeminiResponse {
-  const { prompt, language, activeConfigRaw, parsedConfig } = params;
-  const isTH = language === 'TH';
+/** Keyword routing for free-text questions; quick actions pass their `intent` explicitly. */
+function detectIntent(prompt: string): QuickActionType | undefined {
   const query = prompt.toLowerCase();
+  const has = (...words: string[]) => words.some((w) => query.includes(w));
+
+  if (has('topology', 'diagram', 'แผนภาพ', 'ไดอะแกรม')) return 'topology';
+  if (has('summar', 'สรุป', 'overview', 'วิเคราะห์')) return 'summary';
+  if (has('security', 'audit', 'ปลอดภัย', 'ตรวจ')) return 'security';
+  if (has('compare', 'เปรียบเทียบ', 'cisco', 'huawei', 'trunk', 'vlan')) return 'compare';
+  return undefined;
+}
+
+export function generateOfflineResponse(params: {
+  prompt: string;
+  intent?: QuickActionType;
+  language: SupportedLanguage;
+  parsedConfig?: ParsedNetworkConfig;
+}): OfflineResponse {
+  const { prompt, language, parsedConfig } = params;
+  const isTH = language === 'TH';
+  const intent = params.intent ?? detectIntent(prompt);
 
   // 1. Topology request
-  if (query.includes('topology') || query.includes('diagram') || query.includes('แผนภาพ') || query.includes('ไดอะแกรม')) {
+  if (intent === 'topology') {
     if (parsedConfig) {
       const mermaidCode = generateMermaidTopology(parsedConfig);
       const text = isTH
@@ -174,7 +73,7 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
   }
 
   // 2. Summary request
-  if (query.includes('summar') || query.includes('สรุป') || query.includes('overview') || query.includes('วิเคราะห์')) {
+  if (intent === 'summary') {
     if (parsedConfig) {
       return {
         text: generateSummaryMarkdown(parsedConfig, language),
@@ -191,12 +90,12 @@ Generated based on the configuration of **${parsedConfig.hostname}** (${parsedCo
   }
 
   // 3. Security Audit request
-  if (query.includes('security') || query.includes('audit') || query.includes('ปลอดภัย') || query.includes('ตรวจ')) {
+  if (intent === 'security') {
     return generateSecurityAuditResponse(parsedConfig, isTH);
   }
 
   // 4. Cisco vs Huawei CLI Comparison / Translation
-  if (query.includes('compare') || query.includes('เปรียบเทียบ') || query.includes('cisco') || query.includes('huawei') || query.includes('trunk') || query.includes('vlan')) {
+  if (intent === 'compare') {
     return generateCliComparisonResponse(isTH);
   }
 
@@ -247,7 +146,7 @@ Get started by:
   };
 }
 
-function generateCliComparisonResponse(isTH: boolean): GeminiResponse {
+function generateCliComparisonResponse(isTH: boolean): OfflineResponse {
   const text = isTH
     ? `### 🔄 ตารางเปรียบเทียบคำสั่ง Cisco IOS vs Huawei VRP
 
@@ -294,7 +193,7 @@ Huawei VRP uses \`display\` instead of \`show\`, \`undo\` instead of \`no\`, and
   };
 }
 
-function generateSecurityAuditResponse(parsedConfig: ParsedNetworkConfig | undefined, isTH: boolean): GeminiResponse {
+function generateSecurityAuditResponse(parsedConfig: ParsedNetworkConfig | undefined, isTH: boolean): OfflineResponse {
   if (!parsedConfig) {
     return {
       text: isTH ? 'กรุณาอัปโหลดไฟล์ Config ก่อนเพื่อทำการตรวจความปลอดภัย' : 'Please upload a config file first to run a security audit.',

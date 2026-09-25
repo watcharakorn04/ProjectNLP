@@ -1,3 +1,5 @@
+import type { ExtractedNetworkConfig } from '../core/parser/types';
+
 export type VendorType = 'Cisco IOS' | 'Huawei VRP' | 'Unknown';
 
 export interface VlanInfo {
@@ -44,5 +46,7 @@ export interface UploadedConfigFile {
   rawContent: string;
   detectedVendor: VendorType;
   parsedData?: ParsedNetworkConfig;
+  /** Structured output of the core NetBot parser (`src/core/parser`). */
+  extractedConfig?: ExtractedNetworkConfig;
   uploadedAt: string;
 }

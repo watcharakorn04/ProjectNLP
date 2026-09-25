@@ -1,22 +1,50 @@
 import React from 'react';
-import { ChatMessage } from '../types/chat';
+import { ChatMessage, SupportedLanguage } from '../types/chat';
 import { CodeBlock } from './CodeBlock';
-import { MermaidViewer } from './MermaidViewer';
-import { User, Network, ChevronRight } from 'lucide-react';
+import { DiagramCard } from './DiagramCard';
+import { hasMermaidFence, splitFencedBlocks } from '../core/llm';
+import { User, Network } from 'lucide-react';
 
 interface ChatMessageItemProps {
   message: ChatMessage;
   theme?: 'dark' | 'light';
+  language?: SupportedLanguage;
+  /** True while this bubble is receiving streamed text. */
+  isStreaming?: boolean;
+  /** Diagram currently shown in the topology canvas (highlights the matching card). */
+  activeDiagramCode?: string | null;
+  onShowDiagram?: (code: string) => void;
   onOpenFullscreenDiagram?: (code: string) => void;
 }
 
-export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
+interface DiagramRenderOptions {
+  theme: 'dark' | 'light';
+  language: SupportedLanguage;
+  isStreaming: boolean;
+  activeDiagramCode?: string | null;
+  onShowDiagram?: (code: string) => void;
+  onOpenFullscreenDiagram?: (code: string) => void;
+}
+
+const ChatMessageItemComponent: React.FC<ChatMessageItemProps> = ({
   message,
   theme = 'dark',
+  language = 'EN',
+  isStreaming = false,
+  activeDiagramCode,
+  onShowDiagram,
   onOpenFullscreenDiagram
 }) => {
   const isUser = message.sender === 'user';
   const isDark = theme === 'dark';
+  const diagramOptions: DiagramRenderOptions = {
+    theme,
+    language,
+    isStreaming,
+    activeDiagramCode,
+    onShowDiagram,
+    onOpenFullscreenDiagram
+  };
 
   if (isUser) {
     return (
@@ -93,17 +121,20 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
                 : 'bg-white border-slate-200 text-slate-800 shadow-slate-100'
             }`}
           >
-            {renderRichMarkdown(message.text, theme)}
+            {renderRichMarkdown(message.text, diagramOptions)}
 
-            {/* Embedded Mermaid Diagram */}
-            {message.diagramCode && (
-              <div className="mt-5 max-w-full overflow-hidden">
-                <MermaidViewer
-                  code={message.diagramCode}
-                  theme={theme}
-                  onOpenFullscreen={onOpenFullscreenDiagram}
-                />
+            {/* Diagram produced outside the text (offline rule engine) */}
+            {message.diagramCode && !hasMermaidFence(message.text) && (
+              <div className="mt-4 max-w-full overflow-hidden">
+                {renderDiagramCard(message.diagramCode, 'legacy_diagram', diagramOptions)}
               </div>
+            )}
+
+            {isStreaming && (
+              <span
+                aria-hidden
+                className={`inline-block w-2 h-4 align-middle rounded-sm animate-pulse ${isDark ? 'bg-cyan-400' : 'bg-blue-600'}`}
+              />
             )}
           </div>
         </div>
@@ -112,66 +143,72 @@ export const ChatMessageItem: React.FC<ChatMessageItemProps> = ({
   );
 };
 
+/** History bubbles re-render only when their own props change, not on every streamed chunk. */
+export const ChatMessageItem = React.memo(ChatMessageItemComponent);
+
+function renderDiagramCard(code: string | undefined, key: string, options: DiagramRenderOptions, pendingLineCount = 0) {
+  return (
+    <DiagramCard
+      key={key}
+      code={code}
+      pendingLineCount={pendingLineCount}
+      isActive={code !== undefined && code === options.activeDiagramCode}
+      theme={options.theme}
+      language={options.language}
+      onShowInCanvas={options.onShowDiagram}
+      onOpenFullscreen={options.onOpenFullscreenDiagram}
+    />
+  );
+}
+
 /**
- * Top-level markdown renderer splitting text and code blocks.
+ * Top-level markdown renderer splitting text and code blocks. A final fence that is still
+ * open (streaming or truncated reply) is rendered as partial code, never as a diagram.
  */
-function renderRichMarkdown(content: string, theme: 'dark' | 'light'): React.ReactNode {
+function renderRichMarkdown(content: string, options: DiagramRenderOptions): React.ReactNode {
+  const { theme, isStreaming } = options;
   const isDark = theme === 'dark';
-  const codeBlockRegex = /```([a-zA-Z0-9_\-]+)?\s*([\s\S]*?)```/g;
   const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
 
-  while ((match = codeBlockRegex.exec(content)) !== null) {
-    const textBefore = content.substring(lastIndex, match.index);
-    if (textBefore.trim()) {
-      parts.push(
-        <div key={`text_${lastIndex}`} className="space-y-3 max-w-full">
-          {renderMarkdownContent(textBefore, isDark)}
-        </div>
-      );
-    }
-
-    const lang = (match[1] || 'bash').toLowerCase();
-    const code = match[2].trim();
-
-    if (lang === 'mermaid') {
-      parts.push(
-        <div key={`mermaid_${match.index}`} className="my-4 max-w-full overflow-hidden">
-          <MermaidViewer code={code} theme={theme} />
-        </div>
-      );
-    } else {
-      let vendorTag: string | undefined;
-      if (lang.includes('cisco') || code.includes('switchport') || code.includes('show run')) {
-        vendorTag = 'Cisco IOS';
-      } else if (lang.includes('huawei') || code.includes('display current') || code.includes('vlan batch')) {
-        vendorTag = 'Huawei VRP';
+  splitFencedBlocks(content).forEach((segment, index) => {
+    if (segment.type === 'text') {
+      if (segment.content.trim()) {
+        parts.push(
+          <div key={`text_${index}`} className="space-y-3 max-w-full">
+            {renderMarkdownContent(segment.content, isDark)}
+          </div>
+        );
       }
-
-      parts.push(
-        <div key={`code_${match.index}`} className="max-w-full overflow-hidden">
-          <CodeBlock
-            code={code}
-            language={lang}
-            vendorTag={vendorTag}
-            theme={theme}
-          />
-        </div>
-      );
+      return;
     }
 
-    lastIndex = match.index + match[0].length;
-  }
+    const lang = segment.lang || 'bash';
+    const { code, closed } = segment;
 
-  const remaining = content.substring(lastIndex);
-  if (remaining.trim()) {
+    if (lang === 'mermaid' && (closed || isStreaming)) {
+      parts.push(
+        closed
+          ? renderDiagramCard(code, `mermaid_${index}`, options)
+          : renderDiagramCard(undefined, `mermaid_${index}`, options, code ? code.split('\n').length : 0)
+      );
+      return;
+    }
+
+    if (!code && !closed) return;
+
+    let vendorTag: string | undefined;
+    if (lang.includes('cisco') || code.includes('switchport') || code.includes('show run')) {
+      vendorTag = 'Cisco IOS';
+    } else if (lang.includes('huawei') || code.includes('display current') || code.includes('vlan batch')) {
+      vendorTag = 'Huawei VRP';
+    }
+
     parts.push(
-      <div key={`text_remaining`} className="space-y-3 max-w-full">
-        {renderMarkdownContent(remaining, isDark)}
+      <div key={`code_${index}`} className="max-w-full overflow-hidden">
+        <CodeBlock code={code} language={lang} vendorTag={vendorTag} theme={theme} />
       </div>
     );
-  }
+  });
 
   return <div className="space-y-3.5 max-w-full">{parts}</div>;
 }

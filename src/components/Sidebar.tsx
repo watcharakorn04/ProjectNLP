@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Network,
   Sun,
@@ -20,18 +20,20 @@ import {
 } from 'lucide-react';
 import { AppSettings, SupportedLanguage } from '../types/chat';
 import { UploadedConfigFile } from '../types/network';
+import { ConfigLoadResult } from '../core/configLoader';
 import { ConfigUploader } from './ConfigUploader';
 import { i18n } from '../utils/i18nData';
-import { validateApiKey } from '../utils/geminiClient';
+import { validateApiKey } from '../services/geminiService';
+import type { QuickActionType } from '../core/llm';
 
 interface SidebarProps {
   settings: AppSettings;
   onUpdateSettings: (newSettings: Partial<AppSettings>) => void;
   uploadedFile: UploadedConfigFile | null;
-  onFileLoaded: (file: UploadedConfigFile) => void;
+  onConfigLoaded: (result: ConfigLoadResult) => void;
   onRemoveFile: () => void;
   onOpenRawViewer: () => void;
-  onQuickAction: (actionType: 'summary' | 'topology' | 'compare' | 'security') => void;
+  onQuickAction: (actionType: QuickActionType) => void;
   onResetChat: () => void;
   isGenerating?: boolean;
 }
@@ -40,7 +42,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   settings,
   onUpdateSettings,
   uploadedFile,
-  onFileLoaded,
+  onConfigLoaded,
   onRemoveFile,
   onOpenRawViewer,
   onQuickAction,
@@ -50,37 +52,52 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [showKey, setShowKey] = useState(false);
   const [keyInput, setKeyInput] = useState(settings.apiKey);
   const [isValidating, setIsValidating] = useState(false);
-  const [validationMsg, setValidationMsg] = useState<string | null>(null);
+  const [validationMsg, setValidationMsg] = useState<string | null>(settings.apiErrorMessage ?? null);
+  const validationRef = useRef<AbortController | null>(null);
 
   const t = i18n[settings.currentLanguage];
   const isDark = settings.theme === 'dark';
 
   const handleSaveAndValidateKey = async (keyToTest: string) => {
-    if (!keyToTest.trim()) {
+    const key = keyToTest.trim();
+
+    // Blur fires often; don't re-ping Gemini for a key that is already verified.
+    if (key && key === settings.apiKey && settings.apiKeyStatus === 'valid') return;
+
+    validationRef.current?.abort();
+
+    if (!key) {
       onUpdateSettings({
         apiKey: '',
         apiKeyStatus: 'unset',
         apiErrorMessage: undefined
       });
       setValidationMsg(null);
+      setIsValidating(false);
       return;
     }
 
+    const controller = new AbortController();
+    validationRef.current = controller;
     setIsValidating(true);
-    onUpdateSettings({ apiKeyStatus: 'validating' });
-    const result = await validateApiKey(keyToTest);
+    onUpdateSettings({ apiKey: key, apiKeyStatus: 'validating', apiErrorMessage: undefined });
+    const result = await validateApiKey(key, controller.signal);
+
+    // A newer key was entered while this one was being checked.
+    if (validationRef.current !== controller) return;
+    validationRef.current = null;
     setIsValidating(false);
 
     if (result.valid) {
       onUpdateSettings({
-        apiKey: keyToTest.trim(),
+        apiKey: key,
         apiKeyStatus: 'valid',
         apiErrorMessage: undefined
       });
       setValidationMsg(t.apiKeyStatusValid);
     } else {
       onUpdateSettings({
-        apiKey: keyToTest.trim(),
+        apiKey: key,
         apiKeyStatus: 'invalid',
         apiErrorMessage: result.message
       });
@@ -229,6 +246,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="relative flex items-center">
             <input
               type={showKey ? 'text' : 'password'}
+              name="gemini-api-key"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
+              aria-label={t.apiKeyLabel}
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
               onBlur={() => handleSaveAndValidateKey(keyInput)}
@@ -280,7 +303,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </label>
           <ConfigUploader
             uploadedFile={uploadedFile}
-            onFileLoaded={onFileLoaded}
+            onConfigLoaded={onConfigLoaded}
             onRemoveFile={onRemoveFile}
             onOpenRawViewer={onOpenRawViewer}
             theme={settings.theme}
