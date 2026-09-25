@@ -16,10 +16,10 @@ export interface ChatMessage {
     tokensUsed?: number;
     model?: string;
     /** Which engine produced an assistant reply. */
-    source?: 'gemini' | 'offline_engine';
+    source?: 'groq' | 'offline_engine';
     /** Error notices are shown to the user but excluded from the LLM chat history. */
     isError?: boolean;
-    /** Gemini finish reason when it was not a normal `STOP` (e.g. `MAX_TOKENS`, `SAFETY`). */
+    /** Finish reason when it was not a normal `stop` (e.g. `length`, `content_filter`). */
     finishReason?: string;
   };
 }
@@ -36,10 +36,17 @@ export interface PendingReply {
 export type SupportedLanguage = 'EN' | 'TH';
 export type AppTheme = 'dark' | 'light';
 
+export type ApiKeyStatus = 'unset' | 'validating' | 'valid' | 'invalid';
+
+/** The Groq API key and the result of its last validation. */
+export interface ApiCredentials {
+  apiKey: string;
+  status: ApiKeyStatus;
+  errorMessage?: string;
+}
+
 export interface AppSettings {
   currentLanguage: SupportedLanguage;
   theme: AppTheme;
-  apiKey: string;
-  apiKeyStatus: 'unset' | 'validating' | 'valid' | 'invalid';
-  apiErrorMessage?: string;
+  credentials: ApiCredentials;
 }

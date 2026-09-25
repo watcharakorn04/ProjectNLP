@@ -6,7 +6,7 @@ import { generateMermaidTopology } from '../utils/diagramGenerator';
 
 /**
  * Smart offline rule engine: answers from the parsed config without any network call.
- * Used when no Gemini key is configured, and as the fallback when a Gemini request fails.
+ * Used when no Groq key is verified, and as the fallback when a Groq request fails before producing text.
  */
 
 export interface OfflineResponse {

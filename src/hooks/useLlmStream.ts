@@ -1,28 +1,31 @@
 import { useCallback, useEffect, useRef } from 'react';
-import type { GeminiRequestBody, GeminiUsage } from '../core/llm';
-import { GeminiError, streamGeminiContent, toGeminiError } from '../services/geminiService';
+import type { ChatRequestBody, LlmUsage } from '../core/llm';
+import { streamGroqContent } from '../services/groqService';
+import { LlmError, toLlmError } from '../services/llmHttp';
 import { useThrottledStream } from './useThrottledStream';
 
 export interface StreamOutcome {
   /** Everything received, including text that arrived before an error or abort. */
   text: string;
   finishReason?: string;
-  usage?: GeminiUsage;
+  usage?: LlmUsage;
+  /** Groq model that answered (the client picks the first available one in `GROQ_MODELS`). */
+  model?: string;
   /** Set when the stream failed (not when the user stopped it). */
-  error?: GeminiError;
+  error?: LlmError;
   aborted: boolean;
 }
 
 /**
- * Runs one Gemini stream at a time. `streamText` is the throttled text for rendering;
+ * Runs one Groq stream at a time. `streamText` is the throttled text for rendering;
  * `start` never rejects — failures and user aborts come back in the `StreamOutcome`.
  */
-export function useGeminiStream() {
+export function useLlmStream() {
   const { text: streamText, append, flush, reset } = useThrottledStream(60);
   const controllerRef = useRef<AbortController | null>(null);
 
   const start = useCallback(
-    async (apiKey: string, body: GeminiRequestBody): Promise<StreamOutcome> => {
+    async (apiKey: string, body: ChatRequestBody): Promise<StreamOutcome> => {
       controllerRef.current?.abort();
       const controller = new AbortController();
       controllerRef.current = controller;
@@ -37,12 +40,12 @@ export function useGeminiStream() {
       };
 
       try {
-        const result = await streamGeminiContent(apiKey, body, { signal: controller.signal, onText });
+        const result = await streamGroqContent(apiKey, body, { signal: controller.signal, onText });
         if (isCurrent()) flush();
-        return { text: result.text, finishReason: result.finishReason, usage: result.usage, aborted: false };
+        return { text: result.text, finishReason: result.finishReason, usage: result.usage, model: result.model, aborted: false };
       } catch (err) {
         if (isCurrent()) flush();
-        const error = toGeminiError(err, apiKey);
+        const error = toLlmError(err, apiKey);
         const aborted = error.kind === 'aborted';
         return { text: received, error: aborted ? undefined : error, aborted };
       } finally {

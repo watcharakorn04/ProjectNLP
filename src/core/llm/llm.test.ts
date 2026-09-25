@@ -5,15 +5,18 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGeminiRequest,
+  MAX_OUTPUT_TOKENS,
+  buildChatRequest,
   closeOpenFence,
   createSseParser,
   extractMermaid,
-  parseGeminiStreamChunk,
+  hasVerifiedKey,
+  isGroqKeyFormat,
+  parseOpenAiStreamChunk,
   redactSecrets,
   REDACTED,
   splitFencedBlocks,
-  toGeminiHistory
+  toChatHistory
 } from './index';
 import { configSourceFromSample, loadConfigSource } from '../configLoader';
 import { SAMPLE_CONFIGS } from '../../utils/sampleConfigs';
@@ -35,33 +38,6 @@ describe('createSseParser', () => {
     const parser = createSseParser();
     assert.deepEqual(parser.push('event: message\ndata: line1\ndata:line2\n\ndata: tail'), ['line1\nline2']);
     assert.deepEqual(parser.flush(), ['tail']);
-  });
-});
-
-describe('parseGeminiStreamChunk', () => {
-  test('extracts visible text, finish reason and usage, skipping thought parts', () => {
-    const chunk = parseGeminiStreamChunk({
-      candidates: [
-        {
-          content: { role: 'model', parts: [{ text: 'thinking…', thought: true }, { text: 'Hello ' }, { text: 'world' }] },
-          finishReason: 'STOP'
-        }
-      ],
-      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 2, totalTokenCount: 12 }
-    });
-    assert.equal(chunk.text, 'Hello world');
-    assert.equal(chunk.finishReason, 'STOP');
-    assert.deepEqual(chunk.usage, { promptTokens: 10, outputTokens: 2, totalTokens: 12 });
-  });
-
-  test('surfaces streamed errors and prompt blocks', () => {
-    assert.deepEqual(parseGeminiStreamChunk({ error: { code: 429, status: 'RESOURCE_EXHAUSTED', message: 'quota' } }).error, {
-      code: 429,
-      status: 'RESOURCE_EXHAUSTED',
-      message: 'quota'
-    });
-    assert.equal(parseGeminiStreamChunk({ promptFeedback: { blockReason: 'SAFETY' } }).blockReason, 'SAFETY');
-    assert.equal(parseGeminiStreamChunk(null).text, '');
   });
 });
 
@@ -141,7 +117,7 @@ describe('redactSecrets', () => {
   });
 });
 
-describe('buildGeminiRequest', () => {
+describe('buildChatRequest', () => {
   const loaded = loadConfigSource(configSourceFromSample(SAMPLE_CONFIGS[0]));
   assert.ok(loaded.ok);
   const file = loaded.file;
@@ -155,11 +131,11 @@ describe('buildGeminiRequest', () => {
   });
 
   test('quick action payload carries the task, parsed JSON and raw CLI in the final user turn', () => {
-    const body = buildGeminiRequest({ language: 'TH', file, history: [], action: 'topology' });
-    const finalTurn = body.contents[body.contents.length - 1];
+    const body = buildChatRequest({ language: 'TH', file, history: [], action: 'topology' });
+    const finalTurn = body.messages[body.messages.length - 1];
 
     assert.equal(finalTurn.role, 'user');
-    const text = finalTurn.parts[0].text;
+    const text = finalTurn.content;
     assert.match(text, /Task: Draw the logical network topology/);
     assert.match(text, /<parsed_config_json>/);
     assert.match(text, /<raw_cli>/);
@@ -167,7 +143,10 @@ describe('buildGeminiRequest', () => {
 
     const json = text.slice(text.indexOf('<parsed_config_json>') + 20, text.indexOf('</parsed_config_json>'));
     assert.equal(JSON.parse(json).coreParser.hostname, file.extractedConfig!.hostname);
-    assert.match(body.systemInstruction.parts[0].text, /Thai/);
+    assert.equal(body.messages[0].role, 'system');
+    assert.match(body.messages[0].content, /Thai/);
+    assert.equal(body.temperature, 0.2);
+    assert.equal(body.max_completion_tokens, MAX_OUTPUT_TOKENS);
   });
 
   test('history is trimmed to alternating turns that start with the user and skip errors', () => {
@@ -179,18 +158,70 @@ describe('buildGeminiRequest', () => {
       msg('assistant', 'A1 continued'),
       msg('user', 'Q2 unanswered')
     ];
-    assert.deepEqual(toGeminiHistory(history), [
-      { role: 'user', parts: [{ text: 'Q1' }] },
-      { role: 'model', parts: [{ text: 'A1\n\nA1 continued' }] },
-      { role: 'user', parts: [{ text: 'Q2 unanswered' }] }
+    assert.deepEqual(toChatHistory(history), [
+      { role: 'user', content: 'Q1' },
+      { role: 'assistant', content: 'A1\n\nA1 continued' },
+      { role: 'user', content: 'Q2 unanswered' }
     ]);
 
-    const body = buildGeminiRequest({ language: 'EN', file: null, history, userText: 'Q3' });
+    // The unanswered user turn is dropped so two user turns never follow each other.
+    const body = buildChatRequest({ language: 'EN', file: null, history, userText: 'Q3' });
     assert.deepEqual(
-      body.contents.map((c) => c.role),
-      ['user', 'model', 'user']
+      body.messages.map((m) => m.role),
+      ['system', 'user', 'assistant', 'user']
     );
-    assert.match(body.contents[2].parts[0].text, /Question: Q3/);
-    assert.match(body.contents[2].parts[0].text, /No configuration file is loaded/);
+    assert.equal(body.messages[2].content, 'A1\n\nA1 continued');
+    assert.match(body.messages[3].content, /Question: Q3/);
+    assert.match(body.messages[3].content, /No configuration file is loaded/);
+    assert.equal(body.temperature, 0.4);
+  });
+});
+
+describe('parseOpenAiStreamChunk', () => {
+  test('extracts the text delta', () => {
+    const chunk = parseOpenAiStreamChunk({
+      object: 'chat.completion.chunk',
+      choices: [{ index: 0, delta: { role: 'assistant', content: 'Hello' }, finish_reason: null }]
+    });
+    assert.deepEqual(chunk, { text: 'Hello', finishReason: undefined, usage: undefined });
+  });
+
+  test('passes finish reasons through and reads Groq usage', () => {
+    const chunk = parseOpenAiStreamChunk({
+      choices: [{ index: 0, delta: {}, finish_reason: 'length' }],
+      x_groq: { id: 'req_1', usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }
+    });
+    assert.equal(chunk.text, '');
+    assert.equal(chunk.finishReason, 'length');
+    assert.deepEqual(chunk.usage, { promptTokens: 100, outputTokens: 20, totalTokens: 120 });
+
+    assert.equal(parseOpenAiStreamChunk({ choices: [{ delta: {}, finish_reason: 'stop' }] }).finishReason, 'stop');
+    assert.equal(parseOpenAiStreamChunk({ choices: [{ delta: {}, finish_reason: 'content_filter' }] }).finishReason, 'content_filter');
+  });
+
+  test('surfaces error bodies and tolerates junk', () => {
+    assert.deepEqual(
+      parseOpenAiStreamChunk({ error: { message: 'Invalid API Key', type: 'invalid_request_error', code: 'invalid_api_key' } }).error,
+      { message: 'Invalid API Key', type: 'invalid_request_error', code: 'invalid_api_key' }
+    );
+    assert.equal(parseOpenAiStreamChunk(null).text, '');
+    assert.equal(parseOpenAiStreamChunk({ choices: 'nope' }).text, '');
+  });
+});
+
+describe('Groq key helpers', () => {
+  test('isGroqKeyFormat accepts only gsk_ keys', () => {
+    assert.equal(isGroqKeyFormat('  gsk_abc123 '), true);
+    assert.equal(isGroqKeyFormat('gsk_'), false);
+    assert.equal(isGroqKeyFormat('AIzaSyExample'), false);
+    assert.equal(isGroqKeyFormat('sk-something-else'), false);
+    assert.equal(isGroqKeyFormat(''), false);
+  });
+
+  test('hasVerifiedKey requires a key whose validation succeeded', () => {
+    assert.equal(hasVerifiedKey({ apiKey: 'gsk_key', status: 'valid' }), true);
+    assert.equal(hasVerifiedKey({ apiKey: 'gsk_key', status: 'invalid' }), false);
+    assert.equal(hasVerifiedKey({ apiKey: 'gsk_key', status: 'validating' }), false);
+    assert.equal(hasVerifiedKey({ apiKey: '', status: 'valid' }), false);
   });
 });

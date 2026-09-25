@@ -18,17 +18,117 @@ import {
   ExternalLink,
   Info
 } from 'lucide-react';
-import { AppSettings, SupportedLanguage } from '../types/chat';
+import { ApiCredentials, AppSettings } from '../types/chat';
 import { UploadedConfigFile } from '../types/network';
 import { ConfigLoadResult } from '../core/configLoader';
 import { ConfigUploader } from './ConfigUploader';
 import { i18n } from '../utils/i18nData';
-import { validateApiKey } from '../services/geminiService';
+import { validateGroqKey } from '../services/groqService';
+import { isGroqKeyFormat } from '../core/llm';
 import type { QuickActionType } from '../core/llm';
+
+interface ApiKeyFieldProps {
+  label: string;
+  placeholder: string;
+  credentials: ApiCredentials;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  validMessage: string;
+  isDark: boolean;
+}
+
+/** The Groq key input with its status badge and validation message. */
+const ApiKeyField: React.FC<ApiKeyFieldProps> = ({
+  label,
+  placeholder,
+  credentials,
+  value,
+  onChange,
+  onSubmit,
+  validMessage,
+  isDark
+}) => {
+  const [showKey, setShowKey] = useState(false);
+  const { status } = credentials;
+  const message = status === 'valid' ? validMessage : status === 'invalid' ? credentials.errorMessage : undefined;
+
+  const statusIcon =
+    status === 'validating' ? (
+      <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+    ) : status === 'valid' ? (
+      <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+    ) : status === 'invalid' ? (
+      <AlertCircle className="w-3.5 h-3.5 text-rose-400" />
+    ) : (
+      <Key className="w-3.5 h-3.5 text-slate-500" />
+    );
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 font-bold text-slate-300">
+          {statusIcon}
+          <span className={isDark ? 'text-slate-200' : 'text-slate-800'}>{label}</span>
+        </div>
+        <span
+          className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
+            status === 'valid'
+              ? 'bg-emerald-500/10 text-emerald-400'
+              : status === 'invalid'
+              ? 'bg-rose-500/10 text-rose-400'
+              : 'bg-slate-800 text-slate-400'
+          }`}
+        >
+          {status === 'valid' ? 'Active' : status === 'invalid' ? 'Error' : 'Not set'}
+        </span>
+      </div>
+
+      <div className="relative flex items-center">
+        <input
+          type={showKey ? 'text' : 'password'}
+          name="groq-api-key"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          aria-label={label}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={onSubmit}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') onSubmit();
+          }}
+          placeholder={placeholder}
+          className={`w-full pr-14 pl-2.5 py-1.5 rounded-lg border text-xs font-mono transition-colors outline-none focus:ring-1 focus:ring-cyan-500 ${
+            isDark
+              ? 'bg-slate-900 border-slate-700/80 text-slate-100 placeholder:text-slate-600'
+              : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
+          }`}
+        />
+        <div className="absolute right-1 flex items-center">
+          <button
+            type="button"
+            onClick={() => setShowKey(!showKey)}
+            className="p-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
+            title={showKey ? 'Hide Key' : 'Show Key'}
+          >
+            {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+          </button>
+        </div>
+      </div>
+
+      {message && (
+        <p className={`text-[10px] leading-tight ${status === 'valid' ? 'text-emerald-400' : 'text-rose-400'}`}>{message}</p>
+      )}
+    </div>
+  );
+};
 
 interface SidebarProps {
   settings: AppSettings;
-  onUpdateSettings: (newSettings: Partial<AppSettings>) => void;
+  onUpdateSettings: (newSettings: Partial<Omit<AppSettings, 'credentials'>>) => void;
+  onUpdateCredentials: (patch: Partial<ApiCredentials>) => void;
   uploadedFile: UploadedConfigFile | null;
   onConfigLoaded: (result: ConfigLoadResult) => void;
   onRemoveFile: () => void;
@@ -41,6 +141,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
   settings,
   onUpdateSettings,
+  onUpdateCredentials,
   uploadedFile,
   onConfigLoaded,
   onRemoveFile,
@@ -49,10 +150,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onResetChat,
   isGenerating = false
 }) => {
-  const [showKey, setShowKey] = useState(false);
-  const [keyInput, setKeyInput] = useState(settings.apiKey);
-  const [isValidating, setIsValidating] = useState(false);
-  const [validationMsg, setValidationMsg] = useState<string | null>(settings.apiErrorMessage ?? null);
+  const [keyInput, setKeyInput] = useState(settings.credentials.apiKey);
   const validationRef = useRef<AbortController | null>(null);
 
   const t = i18n[settings.currentLanguage];
@@ -61,61 +159,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const handleSaveAndValidateKey = async (keyToTest: string) => {
     const key = keyToTest.trim();
 
-    // Blur fires often; don't re-ping Gemini for a key that is already verified.
-    if (key && key === settings.apiKey && settings.apiKeyStatus === 'valid') return;
+    // Blur fires often; don't re-ping Groq for a key that is already verified.
+    const current = settings.credentials;
+    if (key && key === current.apiKey && current.status === 'valid') return;
 
     validationRef.current?.abort();
+    validationRef.current = null;
 
     if (!key) {
-      onUpdateSettings({
-        apiKey: '',
-        apiKeyStatus: 'unset',
-        apiErrorMessage: undefined
-      });
-      setValidationMsg(null);
-      setIsValidating(false);
+      onUpdateCredentials({ apiKey: '', status: 'unset', errorMessage: undefined });
+      return;
+    }
+    // Reject keys for other services locally, so they are never sent to Groq.
+    if (!isGroqKeyFormat(key)) {
+      onUpdateCredentials({ apiKey: key, status: 'invalid', errorMessage: t.apiKeyFormatInvalid });
       return;
     }
 
     const controller = new AbortController();
     validationRef.current = controller;
-    setIsValidating(true);
-    onUpdateSettings({ apiKey: key, apiKeyStatus: 'validating', apiErrorMessage: undefined });
-    const result = await validateApiKey(key, controller.signal);
+    onUpdateCredentials({ apiKey: key, status: 'validating', errorMessage: undefined });
+    const result = await validateGroqKey(key, controller.signal);
 
     // A newer key was entered while this one was being checked.
     if (validationRef.current !== controller) return;
     validationRef.current = null;
-    setIsValidating(false);
 
-    if (result.valid) {
-      onUpdateSettings({
-        apiKey: key,
-        apiKeyStatus: 'valid',
-        apiErrorMessage: undefined
-      });
-      setValidationMsg(t.apiKeyStatusValid);
-    } else {
-      onUpdateSettings({
-        apiKey: key,
-        apiKeyStatus: 'invalid',
-        apiErrorMessage: result.message
-      });
-      setValidationMsg(result.message);
-    }
-  };
-
-  const getStatusIcon = () => {
-    if (isValidating || settings.apiKeyStatus === 'validating') {
-      return <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />;
-    }
-    if (settings.apiKeyStatus === 'valid') {
-      return <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />;
-    }
-    if (settings.apiKeyStatus === 'invalid') {
-      return <AlertCircle className="w-3.5 h-3.5 text-rose-400" />;
-    }
-    return <Key className="w-3.5 h-3.5 text-slate-500" />;
+    onUpdateCredentials(
+      result.valid
+        ? { apiKey: key, status: 'valid', errorMessage: undefined }
+        : { apiKey: key, status: 'invalid', errorMessage: result.message }
+    );
   };
 
   return (
@@ -213,83 +287,22 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Scrollable Center Section */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {/* Gemini API Key Section */}
+        {/* Groq API Key Section */}
         <div
-          className={`p-3 rounded-xl border text-xs space-y-2 ${
+          className={`p-3 rounded-xl border text-xs space-y-3 ${
             isDark ? 'bg-slate-950/70 border-slate-800' : 'bg-white border-slate-200'
           }`}
         >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5 font-bold text-slate-300">
-              {getStatusIcon()}
-              <span className={isDark ? 'text-slate-200' : 'text-slate-800'}>
-                {t.apiKeyLabel}
-              </span>
-            </div>
-            <span
-              className={`text-[10px] font-mono px-1.5 py-0.2 rounded ${
-                settings.apiKeyStatus === 'valid'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : settings.apiKeyStatus === 'invalid'
-                  ? 'bg-rose-500/10 text-rose-400'
-                  : 'bg-slate-800 text-slate-400'
-              }`}
-            >
-              {settings.apiKeyStatus === 'valid'
-                ? 'Active'
-                : settings.apiKeyStatus === 'invalid'
-                ? 'Error'
-                : 'Offline Engine'}
-            </span>
-          </div>
-
-          <div className="relative flex items-center">
-            <input
-              type={showKey ? 'text' : 'password'}
-              name="gemini-api-key"
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              aria-label={t.apiKeyLabel}
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              onBlur={() => handleSaveAndValidateKey(keyInput)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') handleSaveAndValidateKey(keyInput);
-              }}
-              placeholder={t.apiKeyPlaceholder}
-              className={`w-full pr-14 pl-2.5 py-1.5 rounded-lg border text-xs font-mono transition-colors outline-none focus:ring-1 focus:ring-cyan-500 ${
-                isDark
-                  ? 'bg-slate-900 border-slate-700/80 text-slate-100 placeholder:text-slate-600'
-                  : 'bg-slate-50 border-slate-300 text-slate-900 placeholder:text-slate-400'
-              }`}
-            />
-            <div className="absolute right-1 flex items-center">
-              <button
-                type="button"
-                onClick={() => setShowKey(!showKey)}
-                className="p-1 text-slate-400 hover:text-slate-200 transition-colors cursor-pointer"
-                title={showKey ? 'Hide Key' : 'Show Key'}
-              >
-                {showKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-              </button>
-            </div>
-          </div>
-
-          {validationMsg && (
-            <p
-              className={`text-[10px] leading-tight ${
-                settings.apiKeyStatus === 'valid'
-                  ? 'text-emerald-400'
-                  : settings.apiKeyStatus === 'invalid'
-                  ? 'text-rose-400'
-                  : 'text-slate-400'
-              }`}
-            >
-              {validationMsg}
-            </p>
-          )}
+          <ApiKeyField
+            label={t.apiKeyLabel}
+            placeholder={t.apiKeyPlaceholder}
+            credentials={settings.credentials}
+            value={keyInput}
+            onChange={setKeyInput}
+            onSubmit={() => handleSaveAndValidateKey(keyInput)}
+            validMessage={t.apiKeyStatusValid}
+            isDark={isDark}
+          />
 
           <p className="text-[10px] text-slate-500 leading-tight">
             {t.apiKeyHelp}

@@ -17,7 +17,7 @@ import { ChatMessage, AppSettings, PendingReply } from '../types/chat';
 import { UploadedConfigFile, VendorType } from '../types/network';
 import { ChatMessageItem } from './ChatMessageItem';
 import { i18n } from '../utils/i18nData';
-import { hasMermaidFence } from '../core/llm';
+import { hasMermaidFence, hasVerifiedKey } from '../core/llm';
 import { useSmartAutoScroll } from '../hooks/useSmartAutoScroll';
 
 interface ChatFeedProps {
@@ -61,6 +61,7 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
 
   const t = i18n[settings.currentLanguage];
   const isDark = settings.theme === 'dark';
+  const isOnline = hasVerifiedKey(settings.credentials);
   const isTH = settings.currentLanguage === 'TH';
 
   // Content growth (streamed text, new replies) is followed by the ResizeObserver while pinned.
@@ -442,7 +443,9 @@ export const ChatFeed: React.FC<ChatFeedProps> = ({
         </div>
 
         <div className="max-w-4xl mx-auto mt-2 flex items-center justify-between text-[11px] text-slate-500">
-          <span>{settings.apiKeyStatus === 'valid' ? t.onlineModeNotice : t.offlineModeNotice}</span>
+          <span>
+            {isOnline ? t.onlineModeNotice : t.offlineModeNotice}
+          </span>
           <span className="hidden sm:inline">Press Shift + Enter for new line</span>
         </div>
       </div>

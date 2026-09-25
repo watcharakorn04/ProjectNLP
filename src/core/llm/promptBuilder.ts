@@ -1,13 +1,13 @@
 import type { ChatMessage, SupportedLanguage } from '../../types/chat';
 import type { UploadedConfigFile } from '../../types/network';
-import type { GeminiContent, GeminiRequestBody } from './geminiProtocol';
+import type { ChatRequestBody, OpenAiMessage } from './openaiProtocol';
 
 /**
- * Builds Gemini request payloads. Pure: the same inputs always produce the same body.
+ * Builds Groq chat request bodies. Pure: the same inputs always produce the same body.
  *
- * Layout of every request:
- * - `systemInstruction`: NetBot persona, answer language and output-format rules.
- * - `contents`: a short slice of prior chat turns, then one final user turn that carries the
+ * Layout of every request's `messages`:
+ * - one `system` message: NetBot persona, answer language and output-format rules.
+ * - a short slice of prior chat turns, then one final `user` message that carries the
  *   task plus the current device context (parsed JSON + redacted raw CLI). Context is attached
  *   to the final turn only, so it is sent once per request rather than repeated in history.
  */
@@ -22,6 +22,8 @@ export const ACTIONS_REQUIRING_CONFIG: ReadonlySet<QuickActionType> = new Set(['
 export const MAX_RAW_CONFIG_CHARS = 60_000;
 export const MAX_HISTORY_MESSAGES = 8;
 export const MAX_HISTORY_MESSAGE_CHARS = 6_000;
+/** Groq's free tier has low tokens-per-minute limits, so the completion budget leaves room for the config context. */
+export const MAX_OUTPUT_TOKENS = 4096;
 
 export const REDACTED = '<redacted>';
 
@@ -144,23 +146,23 @@ ${raw}${truncationNote}
 </raw_cli>`;
 }
 
-/** Converts prior chat messages into Gemini turns: recent, non-error, trimmed, alternating, starting with `user`. */
-export function toGeminiHistory(messages: ChatMessage[], limit = MAX_HISTORY_MESSAGES): GeminiContent[] {
-  const turns: GeminiContent[] = [];
+/** Converts prior chat messages into chat turns: recent, non-error, trimmed, alternating, starting with `user`. */
+export function toChatHistory(messages: ChatMessage[], limit = MAX_HISTORY_MESSAGES): OpenAiMessage[] {
+  const turns: OpenAiMessage[] = [];
 
   for (const message of messages.slice(-limit)) {
     if (message.sender === 'system' || message.metadata?.isError) continue;
     const text = message.text.trim();
     if (!text) continue;
 
-    const role = message.sender === 'user' ? 'user' : 'model';
+    const role = message.sender === 'user' ? 'user' : 'assistant';
     const clipped = text.length > MAX_HISTORY_MESSAGE_CHARS ? `${text.slice(0, MAX_HISTORY_MESSAGE_CHARS)}\n[…]` : text;
 
     const last = turns[turns.length - 1];
     if (last && last.role === role) {
-      last.parts[0].text += `\n\n${clipped}`;
+      last.content += `\n\n${clipped}`;
     } else {
-      turns.push({ role, parts: [{ text: clipped }] });
+      turns.push({ role, content: clipped });
     }
   }
 
@@ -168,7 +170,7 @@ export function toGeminiHistory(messages: ChatMessage[], limit = MAX_HISTORY_MES
   return turns;
 }
 
-export interface GeminiRequestInput {
+export interface ChatRequestInput {
   language: SupportedLanguage;
   file: UploadedConfigFile | null;
   /** Chat messages before this request (the new user message is not included). */
@@ -178,26 +180,24 @@ export interface GeminiRequestInput {
   action?: QuickActionType;
 }
 
-export function buildUserTurn({ file, userText, action }: Omit<GeminiRequestInput, 'language' | 'history'>): string {
+export function buildUserTurn({ file, userText, action }: Omit<ChatRequestInput, 'language' | 'history'>): string {
   const task = action ? QUICK_ACTION_TASKS[action] : `Question: ${userText?.trim() ?? ''}`;
   return `${task}\n\n${buildConfigContext(file)}`;
 }
 
-export function buildGeminiRequest(input: GeminiRequestInput): GeminiRequestBody {
-  const contents = toGeminiHistory(input.history);
-  const userTurn = buildUserTurn(input);
+export function buildChatRequest(input: ChatRequestInput): ChatRequestBody {
+  const history = toChatHistory(input.history);
 
-  // History must not end on a user turn, or two user turns would be merged into the new request.
-  if (contents.length > 0 && contents[contents.length - 1].role === 'user') contents.pop();
-  contents.push({ role: 'user', parts: [{ text: userTurn }] });
+  // History must not end on a user turn, or two user turns would follow each other in the request.
+  if (history.length > 0 && history[history.length - 1].role === 'user') history.pop();
 
   return {
-    systemInstruction: { parts: [{ text: buildSystemInstruction(input.language) }] },
-    contents,
-    generationConfig: {
-      temperature: input.action === 'topology' ? 0.2 : 0.4,
-      maxOutputTokens: 8192,
-      thinkingConfig: { thinkingBudget: 1024 }
-    }
+    messages: [
+      { role: 'system', content: buildSystemInstruction(input.language) },
+      ...history,
+      { role: 'user', content: buildUserTurn(input) }
+    ],
+    temperature: input.action === 'topology' ? 0.2 : 0.4,
+    max_completion_tokens: MAX_OUTPUT_TOKENS
   };
 }

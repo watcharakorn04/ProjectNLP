@@ -12,7 +12,7 @@ import { TopologyCanvas, CanvasStatus } from './components/TopologyCanvas';
 import { ToastStack } from './components/ToastStack';
 import { useToasts } from './hooks/useToasts';
 import { usePersistedSettings } from './hooks/usePersistedSettings';
-import { useGeminiStream, StreamOutcome } from './hooks/useGeminiStream';
+import { useLlmStream, StreamOutcome } from './hooks/useLlmStream';
 import { ChatMessage, PendingReply, SupportedLanguage } from './types/chat';
 import { UploadedConfigFile } from './types/network';
 import { SAMPLE_CONFIGS } from './utils/sampleConfigs';
@@ -26,13 +26,16 @@ import {
 } from './core/configLoader';
 import {
   ACTIONS_REQUIRING_CONFIG,
+  FINISH_REASON,
   QUICK_ACTION_LABELS,
   QuickActionType,
-  buildGeminiRequest,
+  buildChatRequest,
   closeOpenFence,
-  extractMermaid
+  extractMermaid,
+  hasVerifiedKey
 } from './core/llm';
-import { GEMINI_MODEL, GeminiError } from './services/geminiService';
+import { GROQ_MODEL } from './services/groqService';
+import { LlmError } from './services/llmHttp';
 import { generateOfflineResponse } from './services/offlineEngine';
 
 const STORAGE_KEY_MESSAGES = 'netbot_messages_v2';
@@ -155,7 +158,7 @@ interface AssistantRequest {
 
 export default function App() {
   // 1. Settings (preferences in localStorage, API key in sessionStorage)
-  const { settings, updateSettings } = usePersistedSettings();
+  const { settings, updateSettings, updateCredentials } = usePersistedSettings();
 
   // 2. Uploaded File State (Initialized with PRD mock data: Huawei Core Switch)
   const [uploadedFile, setUploadedFile] = useState<UploadedConfigFile | null>(() => {
@@ -170,7 +173,7 @@ export default function App() {
 
   // 4. Streaming reply + topology canvas
   const [pendingReply, setPendingReply] = useState<Omit<PendingReply, 'text'> | null>(null);
-  const { streamText, start: startStream, abort: abortStream, reset: resetStream } = useGeminiStream();
+  const { streamText, start: startStream, abort: abortStream, reset: resetStream } = useLlmStream();
   const [activeDiagram, setActiveDiagram] = useState<string | null>(() => findLatestDiagram(messages));
   const [isCanvasCollapsed, setIsCanvasCollapsed] = useState(false);
   /** Id of the reply the current turn may commit; cleared by Reset Chat to drop late results. */
@@ -278,38 +281,43 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
     if (diagram) setActiveDiagram(diagram);
   };
 
-  const reportGeminiError = (error: GeminiError) => {
+  /** Toasts a Groq failure. `fellBack` is true when the offline engine answers the turn instead. */
+  const reportLlmError = (error: LlmError, fellBack: boolean) => {
     if (error.kind === 'invalid-key') {
-      updateSettings({ apiKeyStatus: 'invalid', apiErrorMessage: error.message });
+      updateCredentials({ status: 'invalid', errorMessage: error.message });
       pushToast({
         tone: 'error',
-        title: isTH ? 'Gemini API Key ถูกปฏิเสธ' : 'Gemini API key rejected',
-        description: isTH ? 'สลับไปใช้ Smart Rule Engine แล้ว กรุณาตรวจสอบ Key ในแถบด้านซ้าย' : 'Switched to the offline engine. Check the key in the sidebar.'
+        title: isTH ? 'Groq API Key ถูกปฏิเสธ' : 'Groq API key rejected',
+        description: isTH
+          ? 'สลับไปใช้ Smart Rule Engine แล้ว กรุณาตรวจสอบ Key ในแถบด้านซ้าย'
+          : 'Switched to the offline engine. Check the key in the sidebar.'
       });
       return;
     }
     pushToast({
-      tone: error.kind === 'rate-limit' ? 'warning' : 'error',
+      tone: error.kind === 'rate-limit' || fellBack ? 'warning' : 'error',
       title:
         error.kind === 'rate-limit'
-          ? isTH ? 'ใช้งาน Gemini เกินโควตา' : 'Gemini rate limit reached'
-          : isTH ? 'เรียก Gemini ไม่สำเร็จ' : 'Gemini request failed',
-      description: error.message
+          ? isTH ? 'ใช้งาน Groq เกินโควตา' : 'Groq rate limit reached'
+          : isTH ? 'เรียก Groq ไม่สำเร็จ' : 'Groq request failed',
+      description: fellBack
+        ? `${error.message} — ${isTH ? 'สลับไปใช้ Smart Rule Engine' : 'switching to the offline engine'}`
+        : error.message
     });
   };
 
   /** Turns a finished (or failed / stopped) stream into the message that is committed to history. */
-  const buildGeminiReply = (reply: Omit<PendingReply, 'text'>, outcome: StreamOutcome): ChatMessage => {
+  const buildLlmReply = (reply: Omit<PendingReply, 'text'>, outcome: StreamOutcome): ChatMessage => {
     const notes: string[] = [];
     if (outcome.aborted) notes.push(`**⏹ ${t.generationStopped}**`);
     if (outcome.error) {
-      reportGeminiError(outcome.error);
+      reportLlmError(outcome.error, false);
       notes.push(`**⚠️ ${isTH ? 'การสตรีมถูกขัดจังหวะ' : 'Stream interrupted'}:** ${outcome.error.message}`);
     }
-    if (outcome.finishReason === 'MAX_TOKENS') {
+    if (outcome.finishReason === FINISH_REASON.length) {
       notes.push(isTH ? '**⚠️ คำตอบถูกตัดเนื่องจากยาวเกินขีดจำกัด**' : '**⚠️ Response truncated at the maximum output length.**');
-    } else if (outcome.finishReason && outcome.finishReason !== 'STOP') {
-      notes.push(`**⚠️ ${isTH ? 'Gemini หยุดก่อนจบคำตอบ' : 'Gemini stopped early'} (${outcome.finishReason}).**`);
+    } else if (outcome.finishReason && outcome.finishReason !== FINISH_REASON.stop) {
+      notes.push(`**⚠️ ${isTH ? 'Groq หยุดก่อนจบคำตอบ' : 'Groq stopped early'} (${outcome.finishReason}).**`);
     }
 
     const body = outcome.text.trim() ? closeOpenFence(outcome.text.trim()) : '';
@@ -318,10 +326,10 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
       sender: 'assistant',
       text: [body, ...notes].filter(Boolean).join('\n\n'),
       metadata: {
-        source: 'gemini',
-        model: GEMINI_MODEL,
+        source: 'groq',
+        model: outcome.model ?? GROQ_MODEL,
         tokensUsed: outcome.usage?.totalTokens,
-        finishReason: outcome.finishReason !== 'STOP' ? outcome.finishReason : undefined,
+        finishReason: outcome.finishReason !== FINISH_REASON.stop ? outcome.finishReason : undefined,
         isError: !body
       }
     };
@@ -356,30 +364,30 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
       };
     };
 
+    // Groq → offline engine: no verified key (or a quick action with no config) goes straight offline.
     const missingConfig = request.action !== undefined && ACTIONS_REQUIRING_CONFIG.has(request.action) && !uploadedFile;
-    const canUseGemini = Boolean(settings.apiKey) && settings.apiKeyStatus === 'valid' && !missingConfig;
-    if (!canUseGemini) {
+    if (missingConfig || !hasVerifiedKey(settings.credentials)) {
       commitReply(offlineReply());
       return;
     }
 
     setPendingReply(reply);
-    const outcome = await startStream(
-      settings.apiKey,
-      buildGeminiRequest({ language: lang, file: uploadedFile, history, userText: request.userText, action: request.action })
-    );
+    const body = buildChatRequest({ language: lang, file: uploadedFile, history, userText: request.userText, action: request.action });
+    const outcome = await startStream(settings.credentials.apiKey, body);
 
-    // Nothing usable arrived: answer from the local rule engine instead of leaving an empty reply.
-    if (outcome.error && !outcome.text.trim()) {
-      reportGeminiError(outcome.error);
-      const notice = isTH
-        ? `**⚠️ Gemini ไม่พร้อมใช้งาน (${outcome.error.message}) — แสดงผลจาก Smart Rule Engine แทน**`
-        : `**⚠️ Gemini unavailable (${outcome.error.message}) — showing the Smart Rule Engine result instead.**`;
-      commitReply(offlineReply(notice));
+    if (!outcome.error || outcome.text.trim()) {
+      commitReply(buildLlmReply(reply, outcome));
       return;
     }
 
-    commitReply(buildGeminiReply(reply, outcome));
+    // Groq failed before producing any text: the offline engine answers instead.
+    // Reset Chat during the request drops the turn, so don't toast about it.
+    if (activeTurnRef.current !== reply.id) return;
+    reportLlmError(outcome.error, true);
+    const notice = isTH
+      ? `**⚠️ Groq ไม่พร้อมใช้งาน (${outcome.error.message}) — แสดงผลจาก Smart Rule Engine แทน**`
+      : `**⚠️ Groq unavailable (${outcome.error.message}) — showing the Smart Rule Engine result instead.**`;
+    commitReply(offlineReply(notice));
   };
 
   const handleSendMessage = (text: string) => {
@@ -421,6 +429,7 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
         <Sidebar
           settings={settings}
           onUpdateSettings={updateSettings}
+          onUpdateCredentials={updateCredentials}
           uploadedFile={uploadedFile}
           onConfigLoaded={handleConfigLoaded}
           onRemoveFile={handleRemoveFile}
@@ -442,6 +451,7 @@ Click **"Summarize Config"** or **"Generate Topology"** to analyze and visualize
             <Sidebar
               settings={settings}
               onUpdateSettings={updateSettings}
+              onUpdateCredentials={updateCredentials}
               uploadedFile={uploadedFile}
               onConfigLoaded={(result) => {
                 // Keep the drawer open on failure so the user can retry right away.

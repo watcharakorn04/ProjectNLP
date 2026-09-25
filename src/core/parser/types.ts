@@ -3,7 +3,7 @@
  *
  * `ExtractedNetworkConfig` is the vendor-neutral output of `parseNetworkConfig()`.
  * It is intentionally separate from the legacy UI-facing `ParsedNetworkConfig`
- * in `src/types/network.ts`, which the diagram generator and Gemini client still consume.
+ * in `src/types/network.ts`, which the diagram generator and prompt builder still consume.
  */
 
 /** Short vendor hint accepted by `parseNetworkConfig()`. */

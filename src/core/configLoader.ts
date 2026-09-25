@@ -82,7 +82,7 @@ export function loadConfigSource(
       fileSize: formatFileSize(sizeBytes),
       rawContent,
       detectedVendor,
-      // Legacy shape, still consumed by the Gemini client and diagram generator.
+      // Legacy shape, still consumed by the prompt builder, offline engine and diagram generator.
       parsedData: parseLegacyConfig(rawContent),
       extractedConfig,
       uploadedAt
