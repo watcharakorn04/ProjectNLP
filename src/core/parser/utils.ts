@@ -52,6 +52,17 @@ export function prefixToMask(prefix: number): string {
   return [24, 16, 8, 0].map(shift => (bits >>> shift) & 0xff).join('.');
 }
 
+/** ("10.1.1.1", "255.255.255.0") -> "10.1.1.0" */
+export function networkAddress(ip: string, mask: string): string {
+  const bits = (ipToNumber(ip) & ipToNumber(mask)) >>> 0;
+  return [24, 16, 8, 0].map(shift => (bits >>> shift) & 0xff).join('.');
+}
+
+/** True when `ip` falls inside `network`/`mask`; used to attach a next hop to its connected subnet. */
+export function isInSubnet(ip: string, network: string, mask: string): boolean {
+  return isIPv4(ip) && networkAddress(ip, mask) === networkAddress(network, mask);
+}
+
 /** "255.255.255.0" -> 24 (counts set bits; assumes a contiguous mask). */
 export function maskToPrefix(mask: string): number {
   return mask

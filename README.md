@@ -18,7 +18,7 @@ It runs entirely in the browser. Answers come from Groq when you provide a Groq 
 - **Answer-mode badge**: the chat header shows whether answers come from Groq (online) or from the offline engine.
 - **Live topology canvas**: Mermaid diagrams are drawn as soon as a complete `mermaid` block arrives in a reply, and can be opened full screen.
 - **Diagram export**: download any rendered diagram as SVG or PNG (`netbot-topology-YYYYMMDD.*`). PNGs are rendered at 2x scale on the current theme's background.
-- **Offline fallback**: the Smart Rule Engine answers from the parsed config when there is no valid key, or when Groq fails before answering (for example a persistent HTTP 429 or 503). Its summary and audit include the parsed routing, NAT and ACL data.
+- **Offline fallback**: the Smart Rule Engine answers from the parsed config when there is no valid key, or when Groq fails before answering (for example a persistent HTTP 429 or 503). Its summary and audit include the parsed routing, NAT and ACL data. Questions about static routes, ACLs, NAT, OSPF or BGP ("show the NAT rules", "BGP neighbors") get tables built from the parsed config, and the topology diagram is drawn deterministically from SVIs, IP interfaces, trunks and default routes.
 - **English / Thai UI and answers**, plus light and dark themes.
 
 ## Quick start
@@ -40,8 +40,8 @@ Open the app and paste a Groq API key (`gsk_…`, from https://console.groq.com/
 | `npm run build` | Builds for production into `dist/` |
 | `npm run preview` | Serves the production build |
 | `npm run lint` | Type-checks with `tsc --noEmit` |
-| `npm test` | Runs the parser, config loader, diagram export, LLM, Groq client and offline engine unit tests (`node:test` via `tsx`) |
-| `npm run test:parser` | Runs the parser tests only |
+| `npm test` | Runs the parser, offline diagram generator, Smart Rule Engine, config loader, diagram export, LLM, Groq client and offline engine unit tests (`node:test` via `tsx`) |
+| `npm run test:parser` | Runs the `core/parser` tests only |
 
 ## Groq API key
 
@@ -63,7 +63,8 @@ file / sample ─▶ core/configLoader ─▶ core/parser (vendor-neutral JSON)
 user question / quick action
    ├─ valid key ─▶ core/llm/promptBuilder ─▶ services/groqService (SSE stream)
    │                                         └─ fails with no text ─▶ offline engine
-   └─ no key ────▶ services/offlineEngine + offlineFeatures (rule-based Markdown + Mermaid)
+   └─ no key ────▶ services/offlineEngine + offlineFeatures (rule-based Markdown + Mermaid,
+                    via core/parser/smartRuleEngine + diagramGenerator)
 
 reply text ─▶ core/llm/markdownFences ─▶ services/mermaidRenderer (strict mode) ─▶ topology canvas
                                                                                   └▶ services/diagramExport (SVG / PNG)
@@ -78,12 +79,13 @@ src/
 ├── core/                   Pure logic, no React or DOM (unit tested)
 │   ├── configLoader.ts     Validates a file or sample and builds the UploadedConfigFile
 │   ├── diagramExport.ts    File names and size calculations for diagram export
-│   ├── parser/             Cisco IOS / Huawei VRP CLI parser → ExtractedNetworkConfig (interfaces, VLANs, routes, ACLs, NAT, OSPF / BGP)
+│   ├── parser/             Cisco IOS / Huawei VRP CLI parser → ExtractedNetworkConfig (interfaces, VLANs, routes, ACLs, NAT, OSPF / BGP),
+│   │                       plus the offline topology generator and the feature-question tables (smartRuleEngine)
 │   └── llm/                Prompt builder, secret redaction, SSE parser, OpenAI-format chunk decoder, Groq key checks, Markdown fences
 ├── hooks/                  Streaming, throttling, persisted settings, auto-scroll, toasts
 ├── services/               Groq client, API-key storage, offline engine, Mermaid renderer, diagram export
 ├── types/                  Shared chat, network and app types
-└── utils/                  Vendor detector, legacy parser, diagram generator, i18n strings, sample configs
+└── utils/                  Vendor detector, legacy parser and diagram generator, i18n strings, sample configs
 ```
 
 ## Tech stack

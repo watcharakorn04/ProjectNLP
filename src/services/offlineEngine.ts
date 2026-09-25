@@ -1,6 +1,13 @@
 import { ParsedNetworkConfig } from '../types/network';
 import type { SupportedLanguage } from '../types/chat';
 import type { QuickActionType } from '../core/llm';
+import {
+  describeFeatureTopics,
+  detectFeatureTopics,
+  generateTopologyMermaid,
+  inferDeviceRole,
+  maskToPrefix
+} from '../core/parser';
 import type { ExtractedNetworkConfig } from '../core/parser';
 import { generateSummaryMarkdown } from '../utils/networkParser';
 import { auditFeatures, describeFeatures, featureOverview } from './offlineFeatures';
@@ -42,8 +49,25 @@ export function generateOfflineResponse(params: {
   const isTH = language === 'TH';
   const intent = params.intent ?? detectIntent(prompt);
 
+  // Free-text feature questions ("show the static routes", "BGP neighbors") get tables from the parsed
+  // config, unless they ask for a diagram or an audit. Quick actions keep their own reply.
+  if (!params.intent && extractedConfig && intent !== 'topology' && intent !== 'security') {
+    const topics = detectFeatureTopics(prompt);
+    if (topics.length) {
+      return { text: describeFeatureTopics(extractedConfig, topics, isTH), source: 'offline_engine' };
+    }
+  }
+
   // 1. Topology request
   if (intent === 'topology') {
+    if (extractedConfig) {
+      return {
+        text: describeTopology(extractedConfig, isTH),
+        diagramType: 'mermaid',
+        diagramCode: generateTopologyMermaid(extractedConfig),
+        source: 'offline_engine'
+      };
+    }
     if (parsedConfig) {
       const mermaidCode = generateMermaidTopology(parsedConfig);
       const text = isTH
@@ -150,6 +174,33 @@ Get started by:
 - Asking any CLI question to learn configuration procedures step-by-step!`,
     source: 'offline_engine'
   };
+}
+
+/** Caption for the offline topology diagram: what was drawn, with counts from the parsed config. */
+function describeTopology(config: ExtractedNetworkConfig, isTH: boolean): string {
+  const role = inferDeviceRole(config);
+  const gateways = config.sviGateways.length;
+  const gatewayNames = new Set(config.sviGateways.map(gw => gw.interfaceName));
+  const routed = config.interfaces.filter(i => i.ipAddress && !gatewayNames.has(i.name)).length;
+  const trunks = config.interfaces.filter(i => i.mode === 'trunk').length;
+  const nextHops = [
+    ...new Set(config.staticRoutes.filter(r => r.destination === '0.0.0.0' && maskToPrefix(r.mask) === 0).map(r => r.nextHop))
+  ];
+  const defaultRoute = nextHops.length ? nextHops.map(hop => `\`${hop}\``).join(', ') : isTH ? 'ไม่มี' : 'none';
+
+  return isTH
+    ? `### 🌐 แผนภาพโครงสร้างเครือข่าย (Network Topology)
+สร้างจาก Configuration ของ **${config.hostname}** (${config.vendor} • ${role}) โดยไม่ใช้ AI
+- **VLAN Gateway (SVI / Sub-interface):** ${gateways}
+- **อินเทอร์เฟซที่มี IP:** ${routed}
+- **Trunk Link:** ${trunks}
+- **Default Route (next hop):** ${defaultRoute}`
+    : `### 🌐 Network Topology Diagram
+Drawn offline from the configuration of **${config.hostname}** (${config.vendor} • ${role}).
+- **VLAN gateways (SVI / sub-interface):** ${gateways}
+- **Routed IP interfaces:** ${routed}
+- **Trunk links:** ${trunks}
+- **Default route (next hop):** ${defaultRoute}`;
 }
 
 function generateCliComparisonResponse(isTH: boolean): OfflineResponse {

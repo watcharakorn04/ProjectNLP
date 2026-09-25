@@ -11,14 +11,16 @@ import { parseNetworkConfig as parseLegacyConfig } from '../utils/networkParser'
 import type { SupportedLanguage } from '../types/chat';
 import type { QuickActionType } from '../core/llm';
 
-const reply = (raw: string, intent: QuickActionType | undefined, language: SupportedLanguage = 'EN') =>
+const respond = (raw: string, intent: QuickActionType | undefined, prompt = 'hello', language: SupportedLanguage = 'EN') =>
   generateOfflineResponse({
-    prompt: 'hello',
+    prompt,
     intent,
     language,
     parsedConfig: parseLegacyConfig(raw),
     extractedConfig: parseNetworkConfig(raw)
-  }).text;
+  });
+const reply = (raw: string, intent: QuickActionType | undefined, language: SupportedLanguage = 'EN') =>
+  respond(raw, intent, 'hello', language).text;
 
 describe('offline summary', () => {
   test('renders structured routing, NAT and ACL sections instead of raw routing lines', () => {
@@ -101,5 +103,42 @@ describe('offline default reply', () => {
       parsedConfig: parseLegacyConfig(MOCK_RAW_CONFIGS.ciscoEdgeRouter)
     }).text;
     assert.match(text, /Routing Protocols/);
+  });
+});
+
+describe('offline topology', () => {
+  test('draws the diagram from the core parser output', () => {
+    const response = respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, 'topology');
+    assert.equal(response.diagramType, 'mermaid');
+    assert.ok(response.diagramCode?.includes('DEV{{"🌐 EDGE-RTR-01<br/>Cisco IOS • Router"}}'));
+    assert.ok(response.text.includes('- **Default route (next hop):** `198.51.100.1`'));
+    assert.ok(response.text.includes('- **Routed IP interfaces:** 2'));
+  });
+
+  test('free-text diagram requests are drawn too', () => {
+    const response = respond(MOCK_RAW_CONFIGS.huaweiAggSwitch, undefined, 'ขอแผนภาพ topology', 'TH');
+    assert.ok(response.diagramCode?.includes('AGG-SW-B1'));
+    assert.match(response.text, /Trunk Link:\*\* 2/);
+  });
+});
+
+describe('offline feature questions', () => {
+  test('answers static route / ACL / NAT / OSPF / BGP questions with tables', () => {
+    const text = respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, undefined, 'Show me the NAT rules and BGP neighbors').text;
+    assert.match(text, /#### 🔁 NAT \(3 rules\)/);
+    assert.match(text, /#### 🌍 BGP/);
+    assert.doesNotMatch(text, /Static Routes|Access Control Lists/);
+  });
+
+  test('beats the keyword intents that used to swallow them', () => {
+    // "cisco" used to route this to the CLI comparison cheat sheet.
+    const text = respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, undefined, 'summarize the cisco ACLs').text;
+    assert.match(text, /#### 🛡️ Access Control Lists \(3\)/);
+  });
+
+  test('leaves audits, diagrams and quick actions alone', () => {
+    assert.match(respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, undefined, 'security audit of the ACLs').text, /Security/);
+    assert.ok(respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, undefined, 'draw a topology with the routing').diagramCode);
+    assert.match(respond(MOCK_RAW_CONFIGS.ciscoEdgeRouter, 'summary', 'show NAT').text, /#### 🧭 Routing/);
   });
 });

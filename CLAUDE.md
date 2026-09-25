@@ -11,8 +11,8 @@ NetBot is a browser-only React 19 + TypeScript + Vite app. It parses Cisco IOS /
 ```bash
 npm run dev          # Vite on :3000
 npm run lint         # tsc --noEmit (the only static check; there is no ESLint)
-npm test             # node:test via tsx: parser, configLoader, diagramExport, llm, Groq client + key storage, offline engine
-npm run test:parser  # parser tests only
+npm test             # node:test via tsx: parser (incl. diagram generator, smart rule engine), configLoader, diagramExport, llm, Groq client + key storage, offline engine
+npm run test:parser  # core/parser tests only (parser, feature parsers, diagram generator, smart rule engine)
 npm run build
 ```
 
@@ -23,9 +23,11 @@ npm run build
 ## Architecture
 
 - **`src/core/`** is pure logic: no React, no DOM, no `fetch`. Anything testable belongs here, and every module in it has tests next to it (`*.test.ts`). `services/groqService.test.ts` covers the Groq client and key storage against a mocked `fetch` / `sessionStorage`.
-  - `parser/`: `parseNetworkConfig(raw, vendorHint?)` → `ExtractedNetworkConfig`. `vendorParsers.ts` holds the per-vendor parsers, which split the config into sections via `splitSections`; they delegate ACLs, NAT and OSPF / BGP to `aclParser.ts`, `natParser.ts` and `routingParser.ts` (one Cisco and one Huawei function each). `cliParser.ts` handles vendor resolution, SVI / sub-interface gateway extraction, and warnings. When nothing is detected, it defaults to Cisco IOS with confidence 0.
+  - `parser/`: `parseNetworkConfig(raw, vendorHint?)` → `ExtractedNetworkConfig`. `vendorParsers.ts` holds the per-vendor parsers, which split the config into sections via `splitSections`; they delegate ACLs, NAT and OSPF / BGP to `aclParser.ts`, `natParser.ts` and `routingParser.ts` (one Cisco and one Huawei function each). `cliParser.ts` handles vendor resolution, SVI / sub-interface gateway extraction, and warnings. When nothing is detected, it defaults to Cisco IOS with confidence 0. `utils.ts` has the IPv4 helpers (`prefixToMask`, `maskToPrefix`, `networkAddress`, `isInSubnet`, …).
   - `mockData.ts` fixtures are golden: `cliParser.test.ts` deep-equals them against real parser output, so a parser change that alters output must update them.
   - Indented `!` / `#` lines do not close a section (both vendors print them inside BGP blocks).
+  - `diagramGenerator.ts`: `generateTopologyMermaid(extractedConfig)` draws the offline topology (SVI / sub-interface gateways, routed IP interfaces, trunks, default routes → next hop → WAN), capping each group at `MAX_DIAGRAM_NODES_PER_GROUP`. Every label goes through `escapeMermaidLabel` because it comes from the uploaded config. This replaces `utils/diagramGenerator.ts` whenever `extractedConfig` is present.
+  - `smartRuleEngine.ts`: `detectFeatureTopics(prompt)` (word-boundary keyword match; a generic "routing" question expands to static + OSPF + BGP) and `describeFeatureTopics(config, topics, isTH)` (Markdown tables, capped at `MAX_TABLE_ROWS`; a missing feature says "not configured").
   - `configLoader.ts`: file validation (extension, 2 MB limit) and `loadConfigSource()` → `UploadedConfigFile`. `hasExtractedContent` counts ACLs, NAT rules and routing processes too, so an ACL- or BGP-only config is not treated as empty.
   - `diagramExport.ts`: pure helpers for diagram download (file name, SVG size from `viewBox`, PNG canvas size at `PNG_SCALE` capped at `MAX_CANVAS_SIDE`).
   - `llm/`: `promptBuilder.ts` (system prompt, quick-action tasks, `redactSecrets`, history trimming, `buildChatRequest`), `sseParser.ts`, `openaiProtocol.ts` (wire types, `FINISH_REASON`, tolerant chunk decoder), `groqKey.ts` (`isGroqKeyFormat`, `hasVerifiedKey`), and `markdownFences.ts` (Mermaid extraction from partial streams).
@@ -35,7 +37,7 @@ npm run build
   - `llmHttp.ts`: HTTP plumbing for the Groq client: `LlmError` kinds, `redactApiKey`, `fetchWithRetry` (retries on 429/503 before the stream starts; `maxRetries` is configurable), `readSseEvents`.
   - `groqService.ts`: the only LLM client. Streaming, `[DONE]` handling, key validation via `GET /models` (non-`gsk_` keys are rejected without a request). Tries `GROQ_MODELS` in order, moving on only for unavailable-model errors (404, `model_not_found`, `model_decommissioned`) and remembering failures per key. gpt-oss models get `reasoning_effort: 'low'` and `include_reasoning: false`.
   - `apiKeyStorage.ts`: Groq key persistence in `sessionStorage` (`netbot_groq_key_v1`). It migrates the Groq entry of `netbot_llm_credentials_v2` and deletes that key and `netbot_gemini_credentials_v1`.
-  - `offlineEngine.ts`: rule-based replies. Routing / NAT / ACL sections and evidence-based audit checks (`permit any any`, static NAT exposure, OSPF / BGP authentication reminders, no ACLs) come from `extractedConfig` via `offlineFeatures.ts`. `generateSummaryMarkdown`'s `detailSections` argument swaps the legacy routing list / ACL count for those sections.
+  - `offlineEngine.ts`: rule-based replies. Routing / NAT / ACL sections and evidence-based audit checks (`permit any any`, static NAT exposure, OSPF / BGP authentication reminders, no ACLs) come from `extractedConfig` via `offlineFeatures.ts`. `generateSummaryMarkdown`'s `detailSections` argument swaps the legacy routing list / ACL count for those sections. Free-text questions (no quick action) that `detectFeatureTopics` matches are answered with `describeFeatureTopics` tables before the keyword intents run, except topology and security requests.
   - `mermaidRenderer.ts`: serialised renders with `securityLevel: 'strict'`. `renderMermaid(code, theme, { htmlLabels })`: HTML labels are the default; `htmlLabels: false` gives plain SVG `<text>` labels.
   - `diagramExport.ts`: `exportDiagramSvg` / `exportDiagramPng` (both return `DiagramExportResult`). The SVG is re-serialised as XML with an absolute size and the theme background painted in. If drawing it to a canvas fails (`<foreignObject>` taints the canvas in some browsers), the PNG export re-renders with `htmlLabels: false`.
 - **`src/hooks/`**: `useLlmStream` (one Groq stream at a time, abortable, never rejects), `useThrottledStream`, `usePersistedSettings` (`updateSettings` for language/theme, `updateCredentials` for the Groq key), `useSmartAutoScroll`, and `useToasts`.
@@ -48,7 +50,7 @@ npm run build
 - `extractedConfig` (`core/parser`, the newer vendor-neutral shape), and
 - `parsedData` (`utils/networkParser.ts`, the legacy `ParsedNetworkConfig`).
 
-`utils/diagramGenerator.ts`, some UI code and most of the offline engine still read `parsedData`. The prompt builder sends both to Groq. Don't delete the legacy parser without migrating those consumers.
+Some UI code and most of the offline engine still read `parsedData`; `utils/diagramGenerator.ts` is now only the offline topology fallback when `extractedConfig` is missing. The prompt builder sends both to Groq. Don't delete the legacy parser without migrating those consumers.
 
 ## Conventions and invariants
 
